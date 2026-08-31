@@ -1,0 +1,54 @@
+name: Build CPM Auto-Draw APK
+
+on:
+  push:
+    branches: [main]
+    paths: ['android/**']
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: Build Android APK
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          java-version: '17'
+          distribution: 'temurin'
+
+      - uses: android-actions/setup-android@v3
+
+      - name: Build APK
+        run: |
+          chmod +x android/gradlew
+          cd android
+          ./gradlew assembleDebug --no-daemon
+
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: CPM-AutoDraw.apk
+          path: android/app/build/outputs/apk/debug/app-debug.apk
+          retention-days: 90
+
+      - name: Create Release
+        if: github.ref == 'refs/heads/main'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: android-${{ github.run_number }}
+          name: "CPM Auto-Draw APK #${{ github.run_number }}"
+          files: android/app/build/outputs/apk/debug/app-debug.apk
+          body: |
+            ## Kurulum
+            1. APK indir ve yükle
+            2. Erişilebilirlik Servisi + Overlay izni ver
+            3. CPM vinyl editörünü aç
+            4. Uygulamadan BAŞLAT
+          draft: false
