@@ -1,392 +1,665 @@
 /**
- * CPMAutoDrawViewController.m
- * Implementation of the automation control panel.
+ * CPMAutoDrawViewController.m — the automation panel.
+ *
+ * Layout is frame-based inside a scroll view (the panel lives in the overlay window,
+ * where Auto Layout constraints against the safe area are a source of surprises).
  */
 #import "CPMAutoDrawViewController.h"
 #import "CPMExecutionController.h"
+#import "CPMIl2CppBridge.h"
+#import "CPMUICalibration.h"
 #import "CPMVinylShape.h"
+#import "CPMTouchInjector.h"
 #import "OverlayCommon.h"
-#import "OverlayManager.h"
 
-@interface CPMAutoDrawViewController () <UIGestureRecognizerDelegate>
-@property (nonatomic, strong) UIView *controlsContainer;
+static const CGFloat kPanelPadding = 14.0;
+static const CGFloat kPanelRowHeight = 40.0;
+
+@interface CPMAutoDrawViewController () {
+    CPMUICalibration *_calibration;
+    CPMExecutionController *_executionController;
+    BOOL _previewMode;
+
+}
+@property (nonatomic, strong) UIScrollView *scrollView;
+@property (nonatomic, strong) UIView *content;
+@property (nonatomic, assign) CGFloat contentHeight;
+@property (nonatomic, assign) CGFloat contentWidth;
 @property (nonatomic, strong) UIButton *loadImageBtn;
+@property (nonatomic, strong) UIButton *clearImageBtn;
 @property (nonatomic, strong) UIButton *selectRegionBtn;
-@property (nonatomic, strong) UIButton *startBtn;
-@property (nonatomic, strong) UIButton *pauseBtn;
-@property (nonatomic, strong) UIButton *stopBtn;
+@property (nonatomic, strong) UIButton *previewBtn;
 @property (nonatomic, strong) UISlider *layerLimitSlider;
 @property (nonatomic, strong) UILabel *layerLimitLabel;
 @property (nonatomic, strong) UISlider *touchDelaySlider;
 @property (nonatomic, strong) UILabel *touchDelayLabel;
+@property (nonatomic, strong) UISwitch *previewOnlySwitch;
+@property (nonatomic, strong) UISwitch *autoSaveSwitch;
+@property (nonatomic, strong) UIView *regionRow;
+@property (nonatomic, strong) UIButton *startBtn;
+@property (nonatomic, strong) UIButton *pauseBtn;
+@property (nonatomic, strong) UIButton *stopBtn;
+@property (nonatomic, strong) UIButton *emergencyBtn;
+@property (nonatomic, strong) UIButton *doneRegionBtn;
+@property (nonatomic, strong) UIButton *cancelRegionBtn;
 @property (nonatomic, strong) UIProgressView *progressView;
 @property (nonatomic, strong) UILabel *statusLabel;
 @property (nonatomic, strong) UILabel *layerCountLabel;
-@property (nonatomic, strong) UIView *roiOverlay;
-@property (nonatomic, strong) UITapGestureRecognizer *tapGesture;
-@property (nonatomic, strong) UIScrollView *scrollView;
-@property (nonatomic, assign) BOOL isVisible;
+@property (nonatomic, strong) UILabel *diagnosticsLabel;
+@property (nonatomic, strong) UITextView *logView;
+@property (nonatomic, strong) UIImageView *thumbnail;
 @end
 
 @implementation CPMAutoDrawViewController
 
-- (void)viewDidLoad {
-    [super viewDidLoad];
-    [self setupControls];
+- (instancetype)init {
+    return [self initWithNibName:nil bundle:nil];
+}
+
+- (void)loadView {
+    CGSize screen = [UIScreen mainScreen].bounds.size;
+    CGFloat width = MIN(screen.width, 380.0);
+    self.contentWidth = width - 2 * kPanelPadding;
+    self.view = [[UIView alloc] initWithFrame:CGRectMake(0, 0, width, MIN(screen.height, 620))];
+    self.view.clipsToBounds = YES;
+    [self buildControls];
 }
 
 - (void)viewWillAppear:(BOOL)animated {
     [super viewWillAppear:animated];
-    if (self.isVisible) [self showControlsAnimated:NO];
+    [self restorePersistedControls];
+    [self refreshDiagnostics];
+    [self syncFromController];
 }
 
-- (void)setupControls {
-    self.view.backgroundColor = [[UIColor blackColor] colorWithAlphaComponent:0.7];
-    self.view.opaque = NO;
-    
+- (void)viewDidLayoutSubviews {
+    [super viewDidLayoutSubviews];
+    self.scrollView.frame = self.view.bounds;
+    self.scrollView.contentSize = CGSizeMake(self.view.bounds.size.width,
+                                             self.contentHeight + 2 * kPanelPadding);
+}
+
+/// Frame-based row placement: the panel lives in the overlay window, where Auto Layout
+/// against the safe area is more surprise than help.
+- (CGFloat)placeRow:(UIView *)row height:(CGFloat)height {
+    row.frame = CGRectMake(kPanelPadding, self.contentHeight + kPanelPadding, self.contentWidth, height);
+    [self.content addSubview:row];
+    self.contentHeight = CGRectGetMaxY(row.frame) + 8;
+    return CGRectGetMaxY(row.frame);
+}
+
+- (CGFloat)placeView:(UIView *)view {
+    return [self placeRow:view height:kPanelRowHeight];
+}
+
+#pragma mark controls
+
+- (void)buildControls {
+    self.view.backgroundColor = [UIColor colorWithWhite:0.08 alpha:0.96];
+    self.view.layer.cornerRadius = 16;
+
     self.scrollView = [[UIScrollView alloc] initWithFrame:self.view.bounds];
     self.scrollView.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
+    self.scrollView.alwaysBounceVertical = YES;
     [self.view addSubview:self.scrollView];
-    
-    self.controlsContainer = [[UIView alloc] initWithFrame:CGRectMake(0, 0, 320, 500)];
-    self.controlsContainer.center = CGPointMake(CGRectGetMidX(self.view.bounds), CGRectGetMidY(self.view.bounds));
-    self.controlsContainer.backgroundColor = [[UIColor colorWithWhite:0.1 alpha:0.95]];
-    self.controlsContainer.layer.cornerRadius = 16;
-    self.controlsContainer.layer.shadowColor = [UIColor blackColor].CGColor;
-    self.controlsContainer.layer.shadowOpacity = 0.5;
-    self.controlsContainer.layer.shadowRadius = 20;
-    self.controlsContainer.layer.shadowOffset = CGSizeMake(0, 10);
-    [self.scrollView addSubview:self.controlsContainer];
-    
-    CGFloat y = 16;
-    CGFloat padding = 12;
-    CGFloat btnWidth = 280;
-    CGFloat btnHeight = 44;
-    CGFloat sliderWidth = 240;
-    
-    self.loadImageBtn = [self makeButtonWithTitle:@"Load Reference Image"
-                                          action:@selector(loadImageTapped)
-                                          y:&y width:btnWidth height:btnHeight];
-    self.loadImageBtn.backgroundColor = [UIColor systemBlueColor];
-    
-    self.selectRegionBtn = [self makeButtonWithTitle:@"Select ROI Region"
-                                              action:@selector(selectRegionTapped)
-                                              y:&y width:btnWidth height:btnHeight];
-    self.selectRegionBtn.backgroundColor = [UIColor systemOrangeColor];
-    
-    y += 8;
-    
-    UILabel *layerLimitTitle = [self makeLabelWithText:@"Layer Limit:"
-                                                  font:[UIFont systemFontOfSize:13 weight:UIFontWeightMedium]
-                                                  color:[UIColor whiteColor]
-                                                  y:&y alignment:NSTextAlignmentLeft];
-    self.layerLimitSlider = [[UISlider alloc] initWithFrame:CGRectMake(padding, y, sliderWidth, 20)];
-    self.layerLimitSlider.minimumValue = 50;
+
+    self.content = [[UIView alloc] initWithFrame:CGRectZero];
+    [self.scrollView addSubview:self.content];
+    self.contentHeight = 0;
+
+    [self placeRow:[self labelWithText:@"Otomatik Çizim"
+                                  font:[UIFont systemFontOfSize:18 weight:UIFontWeightBold]
+                                   color:[UIColor whiteColor]
+                                  height:26]
+              height:26];
+
+    /* image row: thumbnail + two buttons */
+    UIView *imageRow = [[UIView alloc] initWithFrame:CGRectZero];
+    self.thumbnail = [[UIImageView alloc] initWithFrame:CGRectMake(0, 0, 44, 44)];
+    self.thumbnail.backgroundColor = [UIColor colorWithWhite:0.2 alpha:1];
+    self.thumbnail.contentMode = UIViewContentModeScaleAspectFit;
+    self.thumbnail.layer.cornerRadius = 6;
+    self.thumbnail.userInteractionEnabled = NO;
+    [imageRow addSubview:self.thumbnail];
+    CGFloat halfW = (self.contentWidth - 60 - 16) / 2.0;
+    self.loadImageBtn = [self buttonWithTitle:@"Görsel yükle" action:@selector(loadImageTapped)];
+    self.loadImageBtn.frame = CGRectMake(60, 0, halfW, 44);
+    [imageRow addSubview:self.loadImageBtn];
+    self.clearImageBtn = [self buttonWithTitle:@"Temizle" action:@selector(clearImageTapped)];
+    self.clearImageBtn.frame = CGRectMake(60 + halfW + 8, 0, halfW, 44);
+    [imageRow addSubview:self.clearImageBtn];
+    [self placeRow:imageRow height:44];
+
+    [self placeView:[self buttonWithTitle:@"Boya alanını seç (ROI)" action:@selector(selectRegionTapped)]];
+
+    UIView *regionRow = [[UIView alloc] initWithFrame:CGRectZero];
+    CGFloat regionW = (self.contentWidth - 8) / 2.0;
+    self.doneRegionBtn = [self buttonWithTitle:@"Bölgeyi onayla" action:@selector(doneRegionTapped)];
+    self.doneRegionBtn.frame = CGRectMake(0, 0, regionW, 36);
+    self.doneRegionBtn.hidden = YES;
+    [regionRow addSubview:self.doneRegionBtn];
+    self.cancelRegionBtn = [self buttonWithTitle:@"Vazgeç" action:@selector(cancelRegionTapped)];
+    self.cancelRegionBtn.frame = CGRectMake(regionW + 8, 0, regionW, 36);
+    self.cancelRegionBtn.hidden = YES;
+    [regionRow addSubview:self.cancelRegionBtn];
+    self.regionRow = regionRow;
+    [self placeRow:regionRow height:36];
+
+    [self placeView:[self buttonWithTitle:@"Planı önizle" action:@selector(previewTapped)]];
+
+    /* sliders */
+    self.layerLimitLabel = [self labelWithText:@"Katman sınırı"
+                                          font:[UIFont monospacedDigitSystemFontOfSize:12 weight:UIFontWeightRegular]
+                                           color:[UIColor colorWithWhite:0.8 alpha:1]
+                                          height:16];
+    [self placeRow:self.layerLimitLabel height:16];
+    self.layerLimitSlider = [[UISlider alloc] initWithFrame:CGRectMake(0, 0, self.contentWidth, 24)];
+    self.layerLimitSlider.minimumValue = 10;
     self.layerLimitSlider.maximumValue = 300;
     self.layerLimitSlider.value = 200;
-    self.layerLimitSlider.tintColor = [UIColor systemBlueColor];
     [self.layerLimitSlider addTarget:self action:@selector(layerLimitChanged:) forControlEvents:UIControlEventValueChanged];
-    [self.controlsContainer addSubview:self.layerLimitSlider];
-    y += 28;
-    
-    self.layerLimitLabel = [self makeLabelWithText:@"200 layers"
-                                              font:[UIFont monospacedDigitSystemFontOfSize:12 weight:UIFontWeightRegular]
-                                              color:[[UIColor whiteColor] colorWithAlphaComponent:0.7]
-                                              y:&y alignment:NSTextAlignmentLeft];
-    y += 12;
-    
-    UILabel *touchDelayTitle = [self makeLabelWithText:@"Touch Delay (ms):"
-                                                  font:[UIFont systemFontOfSize:13 weight:UIFontWeightMedium]
-                                                  color:[UIColor whiteColor]
-                                                  y:&y alignment:NSTextAlignmentLeft];
-    self.touchDelaySlider = [[UISlider alloc] initWithFrame:CGRectMake(padding, y, sliderWidth, 20)];
-    self.touchDelaySlider.minimumValue = 5;
-    self.touchDelaySlider.maximumValue = 100;
+    [self placeRow:self.layerLimitSlider height:24];
+
+    self.touchDelayLabel = [self labelWithText:@"Yerleşme gecikmesi"
+                                          font:[UIFont monospacedDigitSystemFontOfSize:12 weight:UIFontWeightRegular]
+                                           color:[UIColor colorWithWhite:0.8 alpha:1]
+                                          height:16];
+    [self placeRow:self.touchDelayLabel height:16];
+    self.touchDelaySlider = [[UISlider alloc] initWithFrame:CGRectMake(0, 0, self.contentWidth, 24)];
+    self.touchDelaySlider.minimumValue = 0;
+    self.touchDelaySlider.maximumValue = 120;
     self.touchDelaySlider.value = 15;
-    self.touchDelaySlider.tintColor = [UIColor systemGreenColor];
     [self.touchDelaySlider addTarget:self action:@selector(touchDelayChanged:) forControlEvents:UIControlEventValueChanged];
-    [self.controlsContainer addSubview:self.touchDelaySlider];
-    y += 28;
-    
-    self.touchDelayLabel = [self makeLabelWithText:@"15 ms"
-                                            font:[UIFont monospacedDigitSystemFontOfSize:12 weight:UIFontWeightRegular]
-                                            color:[[UIColor whiteColor] colorWithAlphaComponent:0.7]
-                                            y:&y alignment:NSTextAlignmentLeft];
-    y += 12;
-    
-    self.progressView = [[UIProgressView alloc] initWithFrame:CGRectMake(padding, y, sliderWidth, 8)];
-    self.progressView.progressTintColor = [UIColor systemBlueColor];
-    self.progressView.trackTintColor = [[UIColor whiteColor] colorWithAlphaComponent:0.2];
-    self.progressView.layer.cornerRadius = 4;
-    self.progressView.clipsToBounds = YES;
-    [self.controlsContainer addSubview:self.progressView];
-    y += 20;
-    
-    self.statusLabel = [self makeLabelWithText:@"Ready"
-                                        font:[UIFont systemFontOfSize:14 weight:UIFontWeightSemibold]
-                                        color:[UIColor whiteColor]
-                                        y:&y alignment:NSTextAlignmentLeft];
-    y += 28;
-    
-    self.layerCountLabel = [self makeLabelWithText:@"Layers: 0/0"
-                                           font:[UIFont monospacedDigitSystemFontOfSize:12 weight:UIFontWeightRegular]
-                                           color:[[UIColor whiteColor] colorWithAlphaComponent:0.6]
-                                           y:&y alignment:NSTextAlignmentLeft];
-    
-    y += 40;
-    
-    CGFloat btnY = self.view.bounds.size.height - 80 - btnHeight;
-    self.startBtn = [self makeButtonWithTitle:@"▶ Start Auto-Draw"
-                                        action:@selector(startTapped)
-                                        y:&btnY width:btnWidth height:btnHeight];
+    [self placeRow:self.touchDelaySlider height:24];
+
+    [self placeRow:[self switchRowWithLabel:@"Sadece önizleme (dokunuş yok)" target:&_previewOnlySwitch
+                                     action:@selector(previewOnlyChanged:)] height:32];
+    [self placeRow:[self switchRowWithLabel:@"Bitince Onay'a bas" target:&_autoSaveSwitch
+                                     action:@selector(autoSaveChanged:)] height:32];
+
+    /* run controls */
+    UIView *runRow = [[UIView alloc] initWithFrame:CGRectZero];
+    CGFloat third = (self.contentWidth - 16) / 3.0;
+    self.startBtn = [self buttonWithTitle:@"BAŞLAT" action:@selector(startTapped)];
+    self.startBtn.frame = CGRectMake(0, 0, third, kPanelRowHeight);
     self.startBtn.backgroundColor = [UIColor systemGreenColor];
-    self.startBtn.layer.cornerRadius = 8;
-    
-    self.pauseBtn = [self makeButtonWithTitle:@"⏸ Pause"
-                                        action:@selector(pauseTapped)
-                                        y:&btnY width:btnWidth height:btnHeight];
-    self.pauseBtn.backgroundColor = [UIColor systemYellowColor];
-    self.pauseBtn.layer.cornerRadius = 8;
-    self.pauseBtn.alpha = 0.6;
-    
-    self.stopBtn = [self makeButtonWithTitle:@"⏹ Stop / Emergency Stop"
-                                       action:@selector(stopTapped)
-                                       y:&btnY width:btnWidth height:btnHeight];
+    [runRow addSubview:self.startBtn];
+    self.pauseBtn = [self buttonWithTitle:@"Duraklat" action:@selector(pauseTapped)];
+    self.pauseBtn.frame = CGRectMake(third + 8, 0, third, kPanelRowHeight);
+    [runRow addSubview:self.pauseBtn];
+    self.stopBtn = [self buttonWithTitle:@"Durdur" action:@selector(stopTapped)];
+    self.stopBtn.frame = CGRectMake(2 * (third + 8), 0, third, kPanelRowHeight);
     self.stopBtn.backgroundColor = [UIColor systemRedColor];
-    self.stopBtn.layer.cornerRadius = 8;
-    self.stopBtn.alpha = 0.6;
-    
-    // ROI overlay for region selection
-    self.roiOverlay = [[UIView alloc] initWithFrame:self.view.bounds];
-    self.roiOverlay.backgroundColor = [UIColor clearColor];
-    self.roiOverlay.layer.borderColor = [UIColor systemYellowColor].CGColor;
-    self.roiOverlay.layer.borderWidth = 2;
-    self.roiOverlay.layer.cornerRadius = 4;
-    self.roiOverlay.hidden = YES;
-    [self.view addSubview:self.roiOverlay];
-    
-    // Tap to exit ROI selection mode
-    self.tapGesture = [[UITapGestureRecognizer alloc] initWithTarget:self action:@selector(roiSelectionTapped:)];
-    self.tapGesture.numberOfTapsRequired = 2;
-    self.tapGesture.delegate = self;
-    [self.roiOverlay addGestureRecognizer:self.tapGesture];
-    
-    // Long press on overlay for emergency stop
-    UILongPressGestureRecognizer *emergencyGesture = [[UILongPressGestureRecognizer alloc] initWithTarget:self
-                                                                                                 action:@selector(emergencyStopPressed:)];
-    emergencyGesture.minimumPressDuration = 0.5;
-    [self.roiOverlay addGestureRecognizer:emergencyGesture];
+    [runRow addSubview:self.stopBtn];
+    [self placeRow:runRow height:kPanelRowHeight];
+
+    self.emergencyBtn = [self buttonWithTitle:@"ACİL DURDUR" action:@selector(emergencyTapped)];
+    self.emergencyBtn.backgroundColor = [UIColor systemRedColor];
+    [self placeView:self.emergencyBtn];
+
+    self.progressView = [[UIProgressView alloc] initWithFrame:CGRectMake(0, 0, self.contentWidth, 8)];
+    [self placeRow:self.progressView height:8];
+
+    self.statusLabel = [self labelWithText:@"Hazır."
+                                      font:[UIFont systemFontOfSize:13 weight:UIFontWeightSemibold]
+                                       color:[UIColor whiteColor]
+                                      height:34];
+    self.statusLabel.numberOfLines = 2;
+    [self placeRow:self.statusLabel height:34];
+
+    self.layerCountLabel = [self labelWithText:@"Katman: 0 / 0"
+                                           font:[UIFont monospacedDigitSystemFontOfSize:12 weight:UIFontWeightRegular]
+                                            color:[UIColor colorWithWhite:0.75 alpha:1]
+                                           height:16];
+    [self placeRow:self.layerCountLabel height:16];
+
+    self.diagnosticsLabel = [self labelWithText:@"…"
+                                           font:[UIFont systemFontOfSize:11]
+                                            color:[UIColor systemYellowColor]
+                                           height:64];
+    self.diagnosticsLabel.numberOfLines = 0;
+    [self placeRow:self.diagnosticsLabel height:64];
+
+    self.logView = [[UITextView alloc] initWithFrame:CGRectMake(0, 0, self.contentWidth, 130)];
+    self.logView.editable = NO;
+    self.logView.selectable = YES;
+    self.logView.font = [UIFont systemFontOfSize:10];
+    self.logView.textColor = [UIColor colorWithWhite:0.85 alpha:1];
+    self.logView.backgroundColor = [UIColor colorWithWhite:0.03 alpha:1];
+    self.logView.layer.cornerRadius = 6;
+    self.logView.textContainerInset = UIEdgeInsetsMake(6, 6, 6, 6);
+    [self placeRow:self.logView height:130];
+
+    self.content.frame = CGRectMake(0, 0, self.view.bounds.size.width, self.contentHeight + kPanelPadding);
+    self.executionController = self.executionController;   /* triggers the lazy wiring */
+    [self.view setNeedsLayout];
 }
 
-- (UIButton *)makeButtonWithTitle:(NSString *)title action:(SEL)action y:(CGFloat *)y width:(CGFloat)w height:(CGFloat)h {
-    UIButton *btn = [UIButton buttonWithType:UIButtonTypeSystem];
-    btn.frame = CGRectMake(20, *y, w, h);
-    [btn setTitle:title forState:UIControlStateNormal];
-    btn.titleLabel.font = [UIFont systemFontOfSize:16 weight:UIFontWeightMedium];
-    [btn setTitleColor:[UIColor whiteColor] forState:UIControlStateNormal];
-    btn.backgroundColor = [[UIColor systemGrayColor] colorWithAlphaComponent:0.3];
-    btn.layer.cornerRadius = 8;
-    btn.layer.borderWidth = 1;
-    btn.layer.borderColor = [[UIColor whiteColor] colorWithAlphaComponent:0.1].CGColor;
-    [btn addTarget:self action:action forControlEvents:UIControlEventTouchUpInside];
-    [self.controlsContainer addSubview:btn];
-    *y += h + 8;
-    return btn;
+- (UIView *)switchRowWithLabel:(NSString *)text target:(UISwitch *__strong *)outSwitch action:(SEL)action {
+    UIView *row = [[UIView alloc] initWithFrame:CGRectZero];
+    UILabel *label = [self labelWithText:text
+                                    font:[UIFont systemFontOfSize:13]
+                                   color:[UIColor whiteColor]
+                                  height:32];
+    label.frame = CGRectMake(0, 0, self.contentWidth - 70, 32);
+    [row addSubview:label];
+    UISwitch *sw = [[UISwitch alloc] initWithFrame:CGRectMake(self.contentWidth - 60, 0, 60, 32)];
+    [sw addTarget:self action:action forControlEvents:UIControlEventValueChanged];
+    [row addSubview:sw];
+    *outSwitch = sw;
+    return row;
 }
 
-- (UILabel *)makeLabelWithText:(NSString *)text font:(UIFont *)font color:(UIColor *)color y:(CGFloat *)y alignment:(NSTextAlignment)alignment {
-    UILabel *label = [[UILabel alloc] initWithFrame:CGRectMake(20, *y, 280, 24)];
-    label.text = text;
-    label.font = font;
-    label.textColor = color;
-    label.textAlignment = alignment;
-    label.numberOfLines = 1;
-    [self.controlsContainer addSubview:label];
-    *y += 28;
-    return label;
+- (UILabel *)labelWithText:(NSString *)text font:(UIFont *)font color:(UIColor *)color height:(CGFloat)height {
+    UILabel *l = [[UILabel alloc] initWithFrame:CGRectMake(0, 0, 300, height)];
+    l.text = text;
+    l.font = font;
+    l.textColor = color;
+    l.numberOfLines = 1;
+    return l;
 }
 
-#pragma mark - Actions
+- (UIButton *)buttonWithTitle:(NSString *)title action:(SEL)action {
+    UIButton *b = [UIButton buttonWithType:UIButtonTypeSystem];
+    [b setTitle:title forState:UIControlStateNormal];   /* declared below via the stub-friendly path */
+    b.titleLabel.font = [UIFont systemFontOfSize:13 weight:UIFontWeightSemibold];
+    [b setTitleColor:[UIColor whiteColor] forState:UIControlStateNormal];
+    b.backgroundColor = [UIColor colorWithWhite:0.22 alpha:1];
+    b.layer.cornerRadius = 8;
+    [b addTarget:self action:action forControlEvents:UIControlEventTouchUpInside];
+    return b;
+}
+
+#pragma mark dependencies
+
+- (CPMUICalibration *)calibration {
+    if (!_calibration) {
+        _calibration = [CPMUICalibration loadFromUserDefaults] ?: [CPMUICalibration defaultCalibration];
+        if (!CGRectIsNull(self.canvasScreenRect)) _calibration.canvasRect = self.canvasScreenRect;
+    }
+    return _calibration;
+}
+
+- (void)setCalibration:(CPMUICalibration *)calibration {
+    _calibration = calibration;
+    self.executionController.calibration = calibration;
+}
+
+- (CPMExecutionController *)executionController {
+    if (!_executionController) {
+        _executionController = [[CPMExecutionController alloc] init];
+        _executionController.delegate = self;
+        _executionController.calibration = self.calibration;
+        _executionController.dryRun = self.previewMode;
+    }
+    return _executionController;
+}
+
+- (void)setExecutionController:(CPMExecutionController *)executionController {
+    _executionController = executionController;
+    if (executionController) {
+        executionController.delegate = self;
+        if (!executionController.calibration) executionController.calibration = self.calibration;
+        executionController.dryRun = self.previewMode;
+    }
+}
+
+- (void)setPreviewMode:(BOOL)previewMode {
+    _previewMode = previewMode;
+    self.executionController.dryRun = previewMode;
+    self.previewOnlySwitch.on = previewMode;
+}
+
+#pragma mark actions
 
 - (void)loadImageTapped {
     if ([self.delegate respondsToSelector:@selector(autoDrawControllerDidRequestImage:)]) {
         [self.delegate autoDrawControllerDidRequestImage:self];
+    } else {
+        [self appendLogLine:@"no image source wired — the overlay must present the picker"];
     }
+}
+
+- (void)clearImageTapped {
+    [self clearReferenceImage];
 }
 
 - (void)selectRegionTapped {
-    self.roiSelectionEnabled = YES;
-    self.roiOverlay.hidden = NO;
-    self.roiOverlay.alpha = 0;
-    [UIView animateWithDuration:0.3 animations:^{
-        self.roiOverlay.alpha = 1;
-    }];
     if ([self.delegate respondsToSelector:@selector(autoDrawController:didRequestROISelection:)]) {
+        /* The host (OverlayManager) owns the overlay window's hit testing, so it drives
+         * the selection and calls back through -roiOverlay:didFinishWithRect:. */
         [self.delegate autoDrawController:self didRequestROISelection:YES];
+        return;
     }
+    CPMROIOverlayView *overlay = self.roiOverlayView;
+    if (!overlay) {
+        [self appendLogLine:@"no ROI overlay available; using the default canvas rect"];
+        return;
+    }
+    overlay.delegate = self;
+    [overlay beginSelection];
+    self.doneRegionBtn.hidden = NO;
+    self.cancelRegionBtn.hidden = NO;
+    [self.view setNeedsLayout];
 }
 
-- (void)roiSelectionTapped:(UITapGestureRecognizer *)gesture {
-    // Double tap to confirm ROI
-    CGRect roi = self.roiOverlay.frame;
-    if (CGRectGetWidth(roi) > 50 && CGRectGetHeight(roi) > 50) {
-        self.roiSelectionEnabled = NO;
-        [self updateROI:roi];
-        [self.roiOverlay removeFromSuperview];
-        self.roiOverlay = nil;
-        self.roiOverlay = [[UIView alloc] initWithFrame:self.view.bounds];
-        self.roiOverlay.backgroundColor = [UIColor clearColor];
-        self.roiOverlay.layer.borderColor = [UIColor systemYellowColor].CGColor;
-        self.roiOverlay.layer.borderWidth = 2;
-        self.roiOverlay.layer.cornerRadius = 4;
-        self.roiOverlay.hidden = YES;
-        [self.view addSubview:self.roiOverlay];
-        [self.tapGesture removeFromRecognizer];
-        self.tapGesture = [[UITapGestureRecognizer alloc] initWithTarget:self action:@selector(roiSelectionTapped:)];
-        self.tapGesture.numberOfTapsRequired = 2;
-        [self.roiOverlay addGestureRecognizer:self.tapGesture];
-    }
+- (void)doneRegionTapped {
+    [self.roiOverlayView finishSelection];
+    self.doneRegionBtn.hidden = YES;
+    self.cancelRegionBtn.hidden = YES;
+}
+
+- (void)cancelRegionTapped {
+    [self.roiOverlayView cancelSelection];
+    self.doneRegionBtn.hidden = YES;
+    self.cancelRegionBtn.hidden = YES;
+}
+
+- (void)previewTapped {
+    if (!self.referenceImage) { [self loadImageTapped]; return; }
+    CPMShapeDecomposer *decomposer = [CPMShapeDecomposer sharedDecomposer];
+    NSInteger cap = self.executionController.maxLayers;
+    CPMShapeDecompositionConfig *cfg = [CPMShapeDecompositionConfig configForDetailedLogoWithMaxLayers:cap];
+    cfg.roiRect = self.roiRect;
+    __weak CPMAutoDrawViewController *weakSelf = self;
+    self.statusLabel.text = @"Önizleme için ayrıştırılıyor…";
+    [decomposer decomposeImage:self.referenceImage withConfig:cfg
+                    completion:^(CPMShapeDecompositionResult *result, NSError *error) {
+        CPMAutoDrawViewController *s = weakSelf;
+        if (!s) return;
+        if (error || !result) {
+            s.statusLabel.text = error.localizedDescription ?: @"preview failed";
+            return;
+        }
+        s.statusLabel.text = result.summaryString;
+        [s appendLogLine:result.summaryString];
+        for (NSString *w in result.warnings) [s appendLogLine:[@"note: " stringByAppendingString:w]];
+        NSArray<NSString *> *preview = [s.executionController planPreviewForShapes:result.shapes
+                                                                          imageSize:result.workingSize];
+        for (NSString *line in preview) [s appendLogLine:line];
+        NSUInteger budget = MIN(result.shapes.count, (NSUInteger)MAX(0, cap));
+        s.layerCountLabel.text = [NSString stringWithFormat:@"Katman: 0 / %lu planlandı", (unsigned long)budget];
+    }];
 }
 
 - (void)startTapped {
-    if (self.executionController && self.referenceImage) {
-        [self.executionController startAutomationWithImage:self.referenceImage roiRect:self.roiRect];
+    if (!self.referenceImage) {
+        [self appendLogLine:@"pick an image first"];
+        [self loadImageTapped];
+        return;
     }
+    self.executionController.calibration = self.calibration;
+    self.executionController.dryRun = self.previewMode;
+    [self.executionController startAutomationWithImage:self.referenceImage roiRect:self.roiRect];
     if ([self.delegate respondsToSelector:@selector(autoDrawControllerDidRequestStart:)]) {
         [self.delegate autoDrawControllerDidRequestStart:self];
     }
 }
 
 - (void)pauseTapped {
+    if (self.executionController.isPaused) [self.executionController resumeAutomation];
+    else [self.executionController pauseAutomation];
     if ([self.delegate respondsToSelector:@selector(autoDrawControllerDidRequestPause:)]) {
         [self.delegate autoDrawControllerDidRequestPause:self];
     }
 }
 
 - (void)stopTapped {
+    [self.executionController stopAutomation];
     if ([self.delegate respondsToSelector:@selector(autoDrawControllerDidRequestStop:)]) {
         [self.delegate autoDrawControllerDidRequestStop:self];
     }
 }
 
-- (void)layerLimitChanged:(UISlider *)slider {
-    NSInteger limit = (NSInteger)slider.value;
-    self.layerLimitLabel.text = [NSString stringWithFormat:@"%ld layers", (long)limit];
-    if (self.executionController) {
-        [self.executionController setMaxLayers:limit];
+- (void)emergencyTapped {
+    [self.executionController emergencyStop];
+    if ([self.delegate respondsToSelector:@selector(autoDrawControllerDidRequestEmergencyStop:)]) {
+        [self.delegate autoDrawControllerDidRequestEmergencyStop:self];
     }
+}
+
+- (void)layerLimitChanged:(UISlider *)slider {
+    NSInteger limit = (NSInteger)(slider.value + 0.5f);
+    self.executionController.maxLayers = limit;
+    self.layerLimitLabel.text = [NSString stringWithFormat:@"Katman sınırı: %ld%@", (long)limit,
+                                 [self gameCapText]];
 }
 
 - (void)touchDelayChanged:(UISlider *)slider {
-    CGFloat ms = slider.value;
-    self.touchDelayLabel.text = [NSString stringWithFormat:@"%.0f ms", ms];
-    if (self.executionController) {
-        [self.executionController setTouchDelay:ms];
-    }
+    NSTimeInterval ms = slider.value;
+    self.executionController.touchDelayMs = ms;
+    self.touchDelayLabel.text = [NSString stringWithFormat:@"Yerleşme gecikmesi: %0.0f ms", ms];
 }
 
-- (void)emergencyStopPressed:(UILongPressGestureRecognizer *)gesture {
-    if (gesture.state == UIGestureRecognizerStateBegan) {
-        [self stopTapped];
-        [self showToast:@"Emergency Stop Activated"];
-    }
+- (void)previewOnlyChanged:(UISwitch *)sender {
+    self.previewMode = sender.isOn;
+    [[NSUserDefaults standardUserDefaults] setBool:sender.isOn forKey:kCPMDefaultsPreviewOnly];
+    [self appendLogLine:sender.isOn ? @"preview only: touches will not be injected"
+                                    : @"live mode: touches will be injected"];
 }
 
-#pragma mark - Public
+- (void)autoSaveChanged:(UISwitch *)sender {
+    self.executionController.autoSaveVinyl = sender.isOn;
+    [[NSUserDefaults standardUserDefaults] setBool:sender.isOn forKey:kCPMDefaultsAutoSave];
+}
+
+#pragma mark persisted controls
+
+/*
+ * The panel is opened inside the game, so re-tuning the sliders on every session is worse
+ * than remembering a value the user can already see. There is no registration domain in this
+ * tweak, so "never stored" is detected with objectForKey: — and for the one setting that can
+ * touch the game, "never stored" means the safe answer: preview only.
+ */
+- (void)restorePersistedControls {
+    NSUserDefaults *d = [NSUserDefaults standardUserDefaults];
+    if ([d objectForKey:kCPMDefaultsLayerLimit]) [self setLayerLimit:[d integerForKey:kCPMDefaultsLayerLimit]];
+    if ([d objectForKey:kCPMDefaultsTouchDelay]) [self setTouchDelay:[d doubleForKey:kCPMDefaultsTouchDelay]];
+    NSNumber *preview = [d objectForKey:kCPMDefaultsPreviewOnly];
+    self.previewMode = preview ? [preview boolValue] : YES;
+    self.previewOnlySwitch.on = self.previewMode;
+    NSNumber *autoSave = [d objectForKey:kCPMDefaultsAutoSave];
+    self.executionController.autoSaveVinyl = autoSave ? [autoSave boolValue] : NO;
+    self.autoSaveSwitch.on = self.executionController.autoSaveVinyl;
+}
+
+#pragma mark image / ROI plumbing
 
 - (void)loadReferenceImage:(UIImage *)image {
     self.referenceImage = image;
-    self.loadImageBtn.setTitle:[NSString stringWithFormat:@"✓ Image Loaded (%lu×%lu)",
-                                 (unsigned long)image.size.width, (unsigned long)image.size.height];
-    self.loadImageBtn.backgroundColor = [UIColor systemGreenColor];
+    self.thumbnail.image = image;
+    self.statusLabel.text = image ? [NSString stringWithFormat:@"Görsel %0.0f×%0.0f pt — önizle ya da başlat",
+                                     image.size.width, image.size.height] : @"Hazır.";
+    [self appendLogLine:image ? @"image loaded" : @"image cleared"];
 }
 
 - (void)clearReferenceImage {
     self.referenceImage = nil;
-    self.loadImageBtn.setTitle:@"Load Reference Image";
-    self.loadImageBtn.backgroundColor = [UIColor systemBlueColor];
+    self.thumbnail.image = nil;
+    self.roiRect = CGRectNull;
+    self.layerCountLabel.text = @"Katman: 0 / 0";
+    [self.statusLabel setText:@"Hazır."];
 }
 
 - (void)updateROI:(CGRect)rect {
-    self.roiRect = rect;
-    if (self.executionController) {
-        self.executionController.referenceROIRect = rect;
-    }
+    self.roiRect = CGRectStandardize(rect);
+    [self appendLogLine:[NSString stringWithFormat:@"image ROI set to %@ — re-run the preview",
+                         NSStringFromCGRect(self.roiRect)]];
+}
+
+/// The overlay's drag selects a *screen* region: that is the canvas, not the image crop.
+- (void)roiOverlay:(CPMROIOverlayView *)overlay didFinishWithRect:(CGRect)rect {
+    self.canvasScreenRect = CGRectStandardize(rect);
+    self.calibration.canvasRect = self.canvasScreenRect;
+    [self.calibration saveToUserDefaults];
+    self.doneRegionBtn.hidden = YES;
+    self.cancelRegionBtn.hidden = YES;
+    [self appendLogLine:[NSString stringWithFormat:@"canvas = %@ (saved)", NSStringFromCGRect(self.canvasScreenRect)]];
+    [self refreshDiagnostics];
+}
+
+- (void)roiOverlayDidCancel:(CPMROIOverlayView *)overlay {
+    self.doneRegionBtn.hidden = YES;
+    self.cancelRegionBtn.hidden = YES;
+    [self appendLogLine:@"region selection cancelled"];
+}
+
+#pragma mark header API
+
+- (void)setLayerLimit:(NSInteger)limit {
+    [[NSUserDefaults standardUserDefaults] setInteger:MAX(1, limit) forKey:kCPMDefaultsLayerLimit];
+    self.executionController.maxLayers = MAX(1, limit);
+    self.layerLimitSlider.value = (float)MIN(300, MAX(10, limit));
+    self.layerLimitLabel.text = [NSString stringWithFormat:@"Katman sınırı: %ld%@", (long)limit, [self gameCapText]];
+}
+
+- (NSInteger)layerLimit {
+    return self.executionController.maxLayers;
+}
+
+- (void)setTouchDelay:(NSTimeInterval)ms {
+    [[NSUserDefaults standardUserDefaults] setDouble:ms forKey:kCPMDefaultsTouchDelay];
+    self.executionController.touchDelayMs = ms;
+    self.touchDelaySlider.value = (float)MIN(120, MAX(0, ms));
+    self.touchDelayLabel.text = [NSString stringWithFormat:@"Yerleşme gecikmesi: %0.0f ms", ms];
+}
+
+- (NSTimeInterval)touchDelay {
+    return self.executionController.touchDelayMs;
 }
 
 - (void)showControlsAnimated:(BOOL)animated {
-    self.isVisible = YES;
-    self.controlsContainer.transform = CGAffineTransformMakeScale(0.8, 0.8);
-    self.controlsContainer.alpha = 0;
-    if (animated) {
-        [UIView animateWithDuration:0.3 animations:^{
-            self.controlsContainer.transform = CGAffineTransformIdentity;
-            self.controlsContainer.alpha = 1;
-        }];
-    } else {
-        self.controlsContainer.transform = CGAffineTransformIdentity;
-        self.controlsContainer.alpha = 1;
-    }
+    self.view.hidden = NO;
+    self.roiOverlayView.hidden = self.roiOverlayView.isSelecting;
+    [self refreshDiagnostics];
+    [self syncFromController];
+    if (!animated) return;
+    self.view.alpha = 0;
+    [UIView animateWithDuration:0.2 animations:^{
+        self.view.alpha = 1;
+    }];
 }
 
 - (void)hideControlsAnimated:(BOOL)animated {
-    self.isVisible = NO;
-    if (animated) {
-        [UIView animateWithDuration:0.2 animations:^{
-            self.controlsContainer.alpha = 0;
-        }];
-    } else {
-        self.controlsContainer.alpha = 0;
+    if (!animated) { self.view.hidden = YES; return; }
+    [UIView animateWithDuration:0.2 animations:^{
+        self.view.alpha = 0;
+    } completion:^(__unused BOOL finished) {
+        self.view.alpha = 1;
+        self.view.hidden = YES;
+    }];
+}
+
+#pragma mark controller callbacks
+
+- (void)controller:(id)controller didUpdateProgress:(CGFloat)progress {
+    self.progressView.progress = (float)progress;
+    id<CPMAutoDrawViewControllerDelegate> delegate = self.delegate;
+    if ([delegate respondsToSelector:@selector(autoDrawController:didUpdateProgress:)]) {
+        [delegate autoDrawController:self didUpdateProgress:progress];
     }
 }
 
+- (void)controller:(id)controller didChangeState:(CPMAutomationStep)state {
+    self.statusLabel.text = [self statusText];
+    NSString *title = state == CPMAutomationStepPaused ? @"Devam" : @"Duraklat";
+    [self.pauseBtn setTitle:title forState:UIControlStateNormal];
+    BOOL running = state == CPMAutomationStepPlacingLayers || state == CPMAutomationStepDecomposingImage ||
+                   state == CPMAutomationStepLoadingImage || state == CPMAutomationStepPaused ||
+                   state == CPMAutomationStepVerifying;
+    self.startBtn.enabled = !running;
+    self.pauseBtn.enabled = running;
+    self.stopBtn.enabled = running;
+    self.previewBtn.enabled = !running;
+}
+
+- (void)controller:(id)controller didPlaceLayer:(NSUInteger)layerIndex total:(NSUInteger)total {
+    self.layerCountLabel.text = [NSString stringWithFormat:@"Katman: %lu / %lu%@",
+                                 (unsigned long)(layerIndex + 1), (unsigned long)total,
+                                 self.executionController.isPaused ? @"  (paused)" : @""];
+    id<CPMAutoDrawViewControllerDelegate> delegate = self.delegate;
+    if ([delegate respondsToSelector:@selector(autoDrawController:didUpdateLayerCount:total:)]) {
+        [delegate autoDrawController:self didUpdateLayerCount:(layerIndex + 1) total:total];
+    }
+    [self refreshDiagnostics];
+}
+
+- (void)controller:(id)controller didLogStep:(NSString *)line {
+    [self appendLogLine:line];
+}
+
+- (void)controller:(id)controller didEncounterError:(NSError *)error {
+    self.statusLabel.text = error.localizedDescription ?: @"failed";
+    [self appendLogLine:[NSString stringWithFormat:@"error: %@", error.localizedDescription ?: @"?"]];
+}
+
+- (void)controllerDidFinish:(id)controller {
+    self.progressView.progress = 1.0;
+    self.statusLabel.text = [self statusText];
+    [self appendLogLine:@"finished"];
+}
+
+#pragma mark status
+
+- (void)syncFromController {
+    CPMExecutionController *c = self.executionController;
+    self.layerLimitSlider.value = (float)c.maxLayers;
+    self.layerLimitLabel.text = [NSString stringWithFormat:@"Katman sınırı: %ld%@", (long)c.maxLayers,
+                                 [self gameCapText]];
+    self.touchDelaySlider.value = (float)c.touchDelayMs;
+    self.touchDelayLabel.text = [NSString stringWithFormat:@"Yerleşme gecikmesi: %0.0f ms", c.touchDelayMs];
+    self.previewOnlySwitch.on = c.dryRun;
+    self.autoSaveSwitch.on = c.autoSaveVinyl;
+    self.progressView.progress = (float)c.progress;
+    self.layerCountLabel.text = [NSString stringWithFormat:@"Katman: %lu / %lu",
+                                 (unsigned long)c.layersPlaced, (unsigned long)c.totalLayers];
+    self.statusLabel.text = [self statusText];
+}
+
+- (NSString *)gameCapText {
+    NSInteger gameCap = [self.executionController gameLayerLimit];
+    NSInteger used = [self.executionController gameLayerCount];
+    if (gameCap <= 0) return @" (oyun sınırı bilinmiyor)";
+    if (used >= 0) return [NSString stringWithFormat:@" (oyun: %ld / %ld kullanımda)", (long)used, (long)gameCap];
+    return [NSString stringWithFormat:@" (oyun sınırı %ld)", (long)gameCap];
+}
+
+- (void)refreshDiagnostics {
+    NSMutableString *text = [NSMutableString string];
+    CPMIl2CppBridge *bridge = self.executionController.bridge ?: [CPMIl2CppBridge sharedBridge];
+    if (bridge.isAvailable) {
+        CPMEditorReadout *readout = [bridge refresh];
+        [text appendString:readout.summaryString ?: @"readout unavailable"];
+        if (readout.layoutDriftCount > 0) {
+            [text appendFormat:@"\n%ld offset(s) corrected live", (long)readout.layoutDriftCount];
+        }
+    } else {
+        [text appendFormat:@"il2cpp readout off: %@", bridge.unavailableReason ?: @"unknown"];
+    }
+    CPMTouchInjector *injector = [CPMTouchInjector sharedInjector];
+    [text appendFormat:@"\nTouch: %@%@", injector.backendDescription,
+     injector.canInjectTouches ? @"" : @" — nothing will reach the game"];
+    [text appendFormat:@"\nCalibration: %@", [self.calibration.validationReport
+                                               stringByReplacingOccurrencesOfString:@"\n" withString:@"\n   "]];
+    self.diagnosticsLabel.text = text;
+    if (self.diagnosticsLabel.text.length > 0) self.diagnosticsLabel.hidden = NO;
+}
+
 - (NSString *)statusText {
-    return self.statusLabel.text ?: @"Ready";
+    return [self.executionController statusDescription] ?: @"boşta";
 }
 
-#pragma mark - Update Methods
-
-- (void)updateProgress:(CGFloat)progress {
-    dispatch_async(dispatch_get_main_queue(), ^{
-        self.progressView.progress = progress;
-        self.statusLabel.text = [NSString stringWithFormat:@"Progress: %.0f%%", progress*100];
-    });
+- (void)appendLogLine:(NSString *)line {
+    if (!line.length) return;
+    NSString *stamp = [NSString stringWithFormat:@"%@\n", line];
+    self.logView.text = [self.logView.text ?: @"" stringByAppendingString:stamp];
+    NSRange end = NSMakeRange(self.logView.text.length, 0);
+    [self.logView scrollRangeToVisible:end];
+    [self.view setNeedsLayout];
 }
 
-- (void)updateLayerCount:(NSUInteger)placed total:(NSUInteger)total {
-    dispatch_async(dispatch_get_main_queue(), ^{
-        self.layerCountLabel.text = [NSString stringWithFormat:@"Layers: %lu/%lu", (unsigned long)placed, (unsigned long)total];
-    });
-}
-
-- (void)updateStatus:(NSString *)status {
-    dispatch_async(dispatch_get_main_queue(), ^{
-        self.statusLabel.text = status;
-    });
-}
-
-- (void)showToast:(NSString *)message {
-    UILabel *toast = [[UILabel alloc] init];
-    toast.text = message;
-    toast.textColor = [UIColor whiteColor];
-    toast.font = [UIFont systemFontOfSize:13 weight:UIFontWeightMedium];
-    toast.textAlignment = NSTextAlignmentCenter;
-    toast.numberOfLines = 2;
-    toast.backgroundColor = [[UIColor blackColor] colorWithAlphaComponent:0.8];
-    toast.layer.cornerRadius = 8;
-    toast.clipsToBounds = YES;
-    [toast sizeToFit];
-    toast.frame = CGRectMake(0, 0, toast.frame.size.width + 24, toast.frame.size.height + 16);
-    toast.center = CGPointMake(CGRectGetMidX(self.view.bounds), CGRectGetMidY(self.view.bounds));
-    toast.alpha = 0;
-    [self.view addSubview:toast];
-    [UIView animateWithDuration:0.2 animations:^{ toast.alpha = 1; }];
-    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(2.0 * NSEC_PER_SEC)),
-                   dispatch_get_main_queue(), ^{
-        [UIView animateWithDuration:0.2 animations:^{ toast.alpha = 0; } completion:^(BOOL f) {
-            [toast removeFromSuperview];
-        }];
-    });
+- (NSString *)description {
+    return [NSString stringWithFormat:@"<%@: %@>", NSStringFromClass(self.class), [self statusText]];
 }
 
 @end

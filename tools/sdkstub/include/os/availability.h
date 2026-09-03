@@ -1,0 +1,13 @@
+#ifndef _CPMSTUB_AVAILABILITY_H
+#define _CPMSTUB_AVAILABILITY_H
+#define API_AVAILABLE(...)
+#define API_DEPRECATED(...)
+#define API_UNAVAILABLE(...)
+#define API_DEPRECATED_WITH_REPLACEMENT(...)
+#define NS_AVAILABLE(...)
+#define NS_CLASS_AVAILABLE(...)
+#define NS_AVAILABLE_IOS(...)
+#define UIKIT_AVAILABLE(...)
+#define UIKIT_CLASS_AVAILABLE(...)
+#define UIKIT_STATIC_INLINE static inline
+#endif

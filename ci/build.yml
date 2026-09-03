@@ -1,11 +1,20 @@
-# Copy over .github/workflows/build.yml on GitHub if git push is rejected
-# (the token has no `workflows` permission).
+# Canonical CI definition. GitHub's Actions only reads .github/workflows/, so this file is
+# mirrored there; the token used by this agent cannot push workflow paths, so if the mirror
+# drifts, paste this file over .github/workflows/build.yml in the web UI.
 name: Build Overlay.dylib
 
 on:
-  workflow_dispatch:
   push:
+    branches: [main, 'arena/**']
   pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: build-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   build:
@@ -15,6 +24,7 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+
       - name: Setup Xcode
         run: |
           set -euo pipefail
@@ -31,8 +41,12 @@ jobs:
           fi
           xcodebuild -version
           xcrun --sdk iphoneos --show-sdk-path
+
       - name: Check sources
-        run: python3 scripts/check_objc.py
+        run: |
+          set -euo pipefail
+          make check
+
       - name: Build
         run: |
           set -euo pipefail
@@ -43,6 +57,7 @@ jobs:
           echo "=== Derleme Sonucu ==="
           ls -lh Overlay.dylib
           lipo -info Overlay.dylib
+
       - name: Upload
         uses: actions/upload-artifact@v4
         with:

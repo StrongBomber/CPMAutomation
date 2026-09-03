@@ -1,0 +1,4 @@
+#ifndef _CPMSTUB_IOHIDEVENTSYSTEM_H
+#define _CPMSTUB_IOHIDEVENTSYSTEM_H
+#include <IOKit/IOKitLib.h>
+#endif

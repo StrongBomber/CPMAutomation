@@ -117,9 +117,11 @@ NS_ASSUME_NONNULL_BEGIN
 - (void)stopAutoDraw;
 - (void)emergencyStopAutoDraw;
 - (void)clearAutoDrawSession;
+/// Paste-ready diagnostics: il2cpp bridge state, touch backend, calibration report.
+- (NSString *)cpmDiagnosticsReport;
 
-@property (nonatomic, strong, readonly, nullable) id executionController;
-@property (nonatomic, strong, readonly, nullable) id autoDrawViewController;
+@property (nonatomic, strong, readonly, nullable) CPMExecutionController *executionController;
+@property (nonatomic, strong, readonly, nullable) CPMAutoDrawViewController *autoDrawViewController;
 @property (nonatomic, assign, readonly) BOOL isAutoDrawRunning;
 @property (nonatomic, assign, readonly) CGFloat autoDrawProgress;
 

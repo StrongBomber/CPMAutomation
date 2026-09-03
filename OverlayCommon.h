@@ -12,7 +12,7 @@
 #define OLLog(fmt, ...) NSLog(@"[OverlayTweak] " fmt, ##__VA_ARGS__)
 #define CPM_LOG(fmt, ...) NSLog(@"[CPM-Automation] " fmt, ##__VA_ARGS__)
 
-static NSString * const kOLVersion = @"2.0.0-CPM-Automation";
+static NSString * const kOLVersion = @"2.1.0-CPM-Automation";
 
 /* ==========================================================================
  * Original OverlayTweak UserDefaults keys
@@ -59,62 +59,37 @@ static NSString * const kCPMDefaultsROIRect       = @"cpm_roi_rect";
 static NSString * const kCPMDefaultsCalibrationVersion = @"cpm_calibration_version";
 static NSString * const kCPMDefaultsLastSessionShapes = @"cpm_last_session_shapes";
 static NSString * const kCPMDefaultsEmergencyStop = @"cpm_emergency_stop";
+static NSString * const kCPMDefaultsPreviewOnly     = @"cpm_preview_only";
+/* The canvas rect the ROI was drawn on lives inside the calibration blob
+ * (CPMUICalibration -saveToUserDefaults), so it deliberately has no key here. */
+static NSString * const kCPMDefaultsAutoSave        = @"cpm_autosave_vinyl";
 
 /* ==========================================================================
- * CPM Shape Primitive Types (matching CPM's vinyl editor)
+ * CPM Automation — shared enums live with their module (single definition!)
+ *
+ *   CPMShapeType               -> Core/CPMVinylShape.h
+ *   CPMColorQuantizationMethod -> Core/CPMShapeDecomposer.h
+ *   CPMAutomationStep          -> Core/CPMExecutionController.h
+ *   CPMUIElementType           -> Core/CPMUICalibration.h
+ *   IL2CPP layout / enums      -> Core/CPMGameLayout.h (generated from dump.cs)
+ *
+ * v2.0 declared a second copy of several of these here; a duplicate
+ * `CPMShapeTypeSquare` in the same translation unit is a hard compile error,
+ * which is exactly why `make` was failing. They are imported instead.
  * ========================================================================== */
-typedef NS_ENUM(NSInteger, CPMShapeType) {
-    CPMShapeTypeSquare = 0,
-    CPMShapeTypeCircle = 1,
-    CPMShapeTypeTriangle = 2,
-    CPMShapeTypeLine = 3,
-    CPMShapeTypePolygon = 4,
-    CPMShapeTypeCustom = 5
-};
+#import "CPMVinylShape.h"
+#import "CPMShapeDecomposer.h"
+#import "CPMExecutionController.h"
+#import "CPMUICalibration.h"
+#import "CPMGameLayout.h"
 
 /* ==========================================================================
- * CPM Color Quantization Options
- * ========================================================================== */
-typedef NS_ENUM(NSInteger, CPMColorQuantizationMode) {
-    CPMColorQuantizationKMeans = 0,    // K-Means clustering
-    CPMColorQuantizationMedianCut = 1, // Median cut algorithm
-    CPMColorQuantizationPopularity = 2 // Popularity-based quantization
-};
-
-/* ==========================================================================
- * CPM Execution States
- * ========================================================================== */
-typedef NS_ENUM(NSInteger, CPMExecutionState) {
-    CPMExecutionStateIdle = 0,
-    CPMExecutionStateProcessing = 1,
-    CPMExecutionStatePlacingLayers = 2,
-    CPMExecutionStatePaused = 3,
-    CPMExecutionStateEmergencyStop = 4,
-    CPMExecutionStateCompleted = 5,
-    CPMExecutionStateFailed = 6
-};
-
-/* ==========================================================================
- * CPM UI Element Identifiers (for calibration mapping)
- * ========================================================================== */
-typedef NS_ENUM(NSInteger, CPMUIElementID) {
-    CPMUIElementAddShape = 0,
-    CPMUIElementShapeSelector = 1,
-    CPMUIElementColorPicker = 2,
-    CPMUIElementRedSlider = 3,
-    CPMUIElementGreenSlider = 4,
-    CPMUIElementBlueSlider = 5,
-    CPMUIElementScaleSlider = 6,
-    CPMUIElementRotateSlider = 7,
-    CPMUIElementMoveJoystick = 8,
-    CPMUIElementConfirmButton = 9,
-    CPMUIElementCancelButton = 10,
-    CPMUIElementLayerListView = 11,
-    CPMUIElementZoomControl = 12
-};
-
-/* ==========================================================================
- * CPM Screen Orientation
+ * CPM Vinyl Editor model (read from dump.cs, see cpm_il2cpp_layout.json)
+ *
+ * A CPM "vinyl" is not a vector shape: the editor's StickerItem is a textured
+ * quad with position / scale / euler angles / colour / draw order, grouped per
+ * VinylsType (Car = 1, Plate = 2, Clan = 3, Window = 4). Every layer we emit
+ * is therefore a coloured quad, which is what the game can actually place.
  * ========================================================================== */
 typedef NS_ENUM(NSInteger, CPMScreenOrientation) {
     CPMScreenOrientationPortrait = 0,
@@ -122,5 +97,37 @@ typedef NS_ENUM(NSInteger, CPMScreenOrientation) {
     CPMScreenOrientationLandscapeRight = 2,
     CPMScreenOrientationPortraitUpsideDown = 3
 };
+
+/* ==========================================================================
+ * Scalar helpers shared by the CPM modules (there is no `clamp()` in C).
+ * ========================================================================== */
+__attribute__((unused)) static inline CGFloat CPMClamp(CGFloat v, CGFloat lo, CGFloat hi) {
+    return (v < lo) ? lo : (v > hi ? hi : v);
+}
+
+__attribute__((unused)) static inline CGFloat CPMMapRange(CGFloat v, CGFloat inLo, CGFloat inHi, CGFloat outLo, CGFloat outHi) {
+    if (inHi == inLo) return outLo;
+    return outLo + (v - inLo) / (inHi - inLo) * (outHi - outLo);
+}
+
+/// Wrap an angle in degrees into [0, 360).
+__attribute__((unused)) static inline CGFloat CPMNormalizeAngle(CGFloat deg) {
+    CGFloat r = fmod(deg, 360.0);
+    return r < 0 ? r + 360.0 : r;
+}
+
+/// Shortest signed difference between two angles, in degrees (-180...180].
+__attribute__((unused)) static inline CGFloat CPMAngleDelta(CGFloat from, CGFloat to) {
+    return CPMNormalizeAngle(to - from + 180.0) - 180.0;
+}
+
+__attribute__((unused)) static inline uint32_t CPMPackRGBA(CGFloat r, CGFloat g, CGFloat b, CGFloat a) {
+    /* Matches VinylData.color (UnityEngine.Color32 packed as RGBA bytes). */
+    uint32_t R = (uint32_t)CPMClamp(r, 0, 255);
+    uint32_t G = (uint32_t)CPMClamp(g, 0, 255);
+    uint32_t B = (uint32_t)CPMClamp(b, 0, 255);
+    uint32_t A = (uint32_t)CPMClamp(a, 0, 255);
+    return (R << 24) | (G << 16) | (B << 8) | A;
+}
 
 #endif /* OverlayCommon_h */

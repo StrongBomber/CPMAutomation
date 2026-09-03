@@ -18,7 +18,20 @@ def properties_in(src: str) -> set[str]:
     names: set[str] = set()
     for m in re.finditer(r"@property\s*\([^)]*\)\s*[^;]*\b(\w+)\s*;", src):
         names.add(m.group(1))
+    # Block properties read `void (^name)(args)`, where the name sits inside parens.
+    for m in re.finditer(r"@property\s*\([^)]*\)\s*\w[^;]*?\(\s*\^\s*(\w+)\s*\)", src):
+        names.add(m.group(1))
     return names
+
+
+def selector_of(decl: str) -> str:
+    """`- (void)foo:(int)a bar:(id)b` -> `foo:bar:` and `- (BOOL)isReady` -> `isReady`."""
+    after = re.sub(r"^[+-]\s*\([^)]*\)\s*", "", decl.strip())
+    parts = re.findall(r"([A-Za-z_]\w*)\s*:(?!:)", after)
+    if parts:
+        return "".join(f"{p}:" for p in parts)
+    head = re.match(r"[A-Za-z_]\w*", after)
+    return head.group(0) if head else after
 
 
 def methods_in_header(src: str) -> set[str]:
@@ -69,9 +82,9 @@ def main() -> int:
     iface = re.search(r"@interface SettingsViewController \(\)(.*?)@end", settings, re.S)
     if not iface:
         errors.append("SettingsViewController private @interface missing")
-        declared: set[str] = set()
-    else:
-        declared = properties_in(iface.group(1))
+    # Files may declare helper classes next to the main one (the shared image-picker token),
+    # so a `self.foo` is legal as long as *some* interface in this file owns the property.
+    declared: set[str] = properties_in(settings)
 
     used = set(re.findall(r"\bself\.([A-Za-z_]\w*)", settings))
     ignore = {
@@ -132,8 +145,11 @@ def main() -> int:
         errors.append("OverlayManager.m missing CATransform3D perspective")
     if "kDefaultsPitch" not in common or "kDefaultsCropL" not in common:
         errors.append("OverlayCommon.h missing pitch/crop defaults keys")
-    if "1.9.0" not in common:
-        errors.append("OverlayCommon.h version is not 1.9.0")
+    version = re.search(r'kOLVersion\s*=\s*@"([^"]+)"', common)
+    if not version:
+        errors.append('OverlayCommon.h: kOLVersion = @"x.y.z" declaration is missing')
+    elif not re.match(r"\d+\.\d+(\.\d+)?(-[0-9A-Za-z.\-]+)?$", version.group(1)):
+        errors.append(f"OverlayCommon.h: unexpected version string {version.group(1)!r}")
     if "kDefaultsWarpPts" not in common:
         errors.append("OverlayCommon.h missing warp defaults key")
     if "beginWarpMode" not in mgr_h or "beginPerspectiveMode" not in mgr_h:
@@ -188,13 +204,16 @@ def main() -> int:
     # Duplicate method definitions (same selector twice in one @implementation)
     impls = re.split(r"@implementation\s+\w+", mgr_m)
     for block in impls[1:]:
-        sels = re.findall(r"^-\s*\([^)]+\)\s*(\w+)", block, re.M)
+        # Full selector, parameter labels included: `pause:` and `pauseFoo:` are different
+        # methods, and so are the many `autoDrawController:...` delegate callbacks.
+        decls = re.findall(r"^[+-]\s*\([^)]*\)[^;{]*[;{]", block, re.M | re.S)
+        sels = [selector_of(d) for d in decls]
         seen: dict[str, int] = {}
-        for s in sels:
-            seen[s] = seen.get(s, 0) + 1
-        for s, n in seen.items():
-            if n > 1 and s not in {"init", "gestureRecognizer", "overlayView"}:
-                errors.append(f"OverlayManager.m duplicate method {s} ({n})")
+        for sel in sels:
+            seen[sel] = seen.get(sel, 0) + 1
+        for sel, n in seen.items():
+            if n > 1 and sel.split(":")[0] not in {"init", "gestureRecognizer", "overlayView"}:
+                errors.append(f"OverlayManager.m duplicate method {sel} ({n})")
 
     for name, src in (
         ("OverlayManager.m", mgr_m),
@@ -228,7 +247,7 @@ def main() -> int:
     print("OK: sources look consistent")
     print(f"  Settings properties: {len(declared)}")
     print(f"  OverlayManager public selectors: {len(public)}")
-    print(f"  Version: 1.9.0")
+    print(f"  Version: {version.group(1) if version else 'unknown'}")
     print("  Workflow YAML: valid")
     return 0
 

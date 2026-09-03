@@ -1,0 +1,4 @@
+#ifndef _CPMSTUB_IOHIDEVENTTYPES_H
+#define _CPMSTUB_IOHIDEVENTTYPES_H
+#include <IOKit/IOKitLib.h>
+#endif

@@ -15,24 +15,33 @@
 #import "OverlayCommon.h"
 #import "OverlayView.h"
 #import "SettingsViewController.h"
+#import "CPMExecutionController.h"
+#import "CPMAutoDrawViewController.h"
+#import "CPMROIOverlayView.h"
+#import "CPMUICalibration.h"
+#import "CPMIl2CppBridge.h"
+#import "CPMTouchInjector.h"
 #import <math.h>
 #import <QuartzCore/QuartzCore.h>
 
 #pragma mark - Private interface (must be first so the window can call us)
 
-@interface OverlayManager () <UIGestureRecognizerDelegate, OverlayViewCropDelegate>
+@interface OverlayManager () <UIGestureRecognizerDelegate, OverlayViewCropDelegate, CPMAutoDrawViewControllerDelegate, CPMROIOverlayViewDelegate>
 
 @property (nonatomic, strong, readwrite) UIWindow *overlayWindow;
 @property (nonatomic, strong, readwrite) UIView *overlayContainer;
 @property (nonatomic, assign, readwrite) BOOL isOverlayVisible;
 @property (nonatomic, assign, readwrite) BOOL isLocked;
 
-// CPM Automation properties
-@property (nonatomic, strong, readwrite, nullable) id executionController;
-@property (nonatomic, strong, readwrite, nullable) id autoDrawViewController;
+// CPM Automation
+@property (nonatomic, strong, readwrite, nullable) CPMExecutionController *executionController;
+@property (nonatomic, strong, readwrite, nullable) CPMAutoDrawViewController *autoDrawViewController;
 @property (nonatomic, assign, readwrite) BOOL isAutoDrawRunning;
 @property (nonatomic, assign, readwrite) CGFloat autoDrawProgress;
 @property (nonatomic, assign, readwrite) BOOL isSettingsVisible;
+@property (nonatomic, strong, nullable) UIView *autoDrawDimView;
+@property (nonatomic, strong, nullable) CPMROIOverlayView *roiOverlay;
+@property (nonatomic, strong, nullable) CPMUICalibration *cpmCalibration;
 
 @property (nonatomic, strong) OverlayView *overlayView;
 @property (nonatomic, strong) UIButton *menuButton;
@@ -554,10 +563,10 @@
 - (void)createQuickButtons {
     for (UIButton *b in self.quickButtons) [b removeFromSuperview];
     UIView *root = self.overlayWindow.rootViewController.view;
-    NSArray *titles = @[ @"✂️", @"🔒", @"👁", @"✨", @"📐", @"🎨" ];
-    NSArray *labels = @[ @"Kırp", @"Kilit", @"Göster", @"Warp", @"Perspektif", @"Renk" ];
+    NSArray *titles = @[ @"✂️", @"🔒", @"👁", @"✨", @"📐", @"🎨", @"🖌" ];
+    NSArray *labels = @[ @"Kırp", @"Kilit", @"Göster", @"Warp", @"Perspektif", @"Renk", @"Otomatik çizim" ];
     NSMutableArray *btns = [NSMutableArray array];
-    for (NSInteger i = 0; i < 6; i++) {
+    for (NSInteger i = 0; i < 7; i++) {
         UIButton *b = [self makeRoundToolButton:titles[i]];
         b.tag = 900 + i;
         b.accessibilityLabel = labels[i];
@@ -676,6 +685,10 @@
         case 5:
             [self hideQuickMenu];
             [self beginColorPickMode];
+            break;
+        case 6:
+            [self hideQuickMenu];
+            [self showAutoDrawPanel];
             break;
         default:
             break;
@@ -840,7 +853,10 @@
     UIWindow *win = self.overlayWindow;
     if (!win) return nil;
 
-    if (!self.isOverlayVisible && !self.isSettingsVisible && self.menuButton.hidden && self.edgeTab.hidden && !self.cropBar) {
+    BOOL cpmUIVisible = (self.autoDrawDimView && !self.autoDrawDimView.hidden) ||
+                        (self.roiOverlay && !self.roiOverlay.hidden);
+    if (!self.isOverlayVisible && !self.isSettingsVisible && self.menuButton.hidden && self.edgeTab.hidden &&
+        !self.cropBar && !cpmUIVisible) {
         return nil;
     }
 
@@ -891,6 +907,17 @@
         CGPoint p = [win convertPoint:point toView:self.settingsContainerView];
         if ([self.settingsContainerView pointInside:p withEvent:event]) {
             return [self.settingsContainerView hitTest:p withEvent:event];
+        }
+    }
+
+    /* ROI picking swallows everything while it is open — the drag has to be clean. */
+    if (self.roiOverlay && !self.roiOverlay.hidden && self.roiOverlay.isSelecting) {
+        return self.roiOverlay;
+    }
+    if (self.autoDrawDimView && !self.autoDrawDimView.hidden) {
+        CGPoint p = [win convertPoint:point toView:self.autoDrawDimView];
+        if ([self.autoDrawDimView pointInside:p withEvent:event]) {
+            return [self.autoDrawDimView hitTest:p withEvent:event];
         }
     }
 
@@ -1989,54 +2016,96 @@
 
 #pragma mark - CPM Image-to-Vinyl Automation
 
+- (CPMExecutionController *)cpmController {
+    if (!self.executionController) {
+        CPMExecutionController *c = [[CPMExecutionController alloc] init];
+        /* The panel is the controller's delegate and forwards what the manager needs;
+         * two observers on one property would just fight over the slot. */
+        c.calibration = [self cpmCalibrationProfile];
+        self.executionController = c;
+    }
+    return self.executionController;
+}
+
+- (CPMUICalibration *)cpmCalibrationProfile {
+    if (!self.cpmCalibration) {
+        self.cpmCalibration = [CPMUICalibration loadFromUserDefaults] ?: [CPMUICalibration defaultCalibration];
+    }
+    return self.cpmCalibration;
+}
+
+- (CPMROIOverlayView *)cpmROIOverlay {
+    UIView *root = self.overlayWindow.rootViewController.view;
+    if (!root) return nil;
+    if (!self.roiOverlay) {
+        CPMROIOverlayView *overlay = [[CPMROIOverlayView alloc] initWithFrame:root.bounds];
+        overlay.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
+        overlay.hidden = YES;
+        [root addSubview:overlay];
+        self.roiOverlay = overlay;
+    }
+    self.roiOverlay.frame = root.bounds;
+    return self.roiOverlay;
+}
+
 - (void)showAutoDrawPanel {
     if (![NSThread isMainThread]) {
         dispatch_async(dispatch_get_main_queue(), ^{ [self showAutoDrawPanel]; });
         return;
     }
-    
-    if (self.isAutoDrawRunning && self.autoDrawViewController) {
-        [self autoDrawViewController:self.autoDrawViewController];
+    UIView *root = self.overlayWindow.rootViewController.view;
+    if (!root) { [self showToast:@"Overlay hazır değil"]; return; }
+
+    [self hideSettingsPanel];
+
+    if (self.autoDrawViewController) {
+        self.autoDrawDimView.hidden = NO;
+        [self.autoDrawViewController showControlsAnimated:NO];
         return;
     }
-    
-    [self hideSettingsPanel];
-    
+
     CPMAutoDrawViewController *vc = [[CPMAutoDrawViewController alloc] init];
     vc.delegate = self;
-    vc.executionController = self.executionController;
-    
-    UIWindow *window = self.overlayWindow;
-    if (!window) return;
-    
-    UIView *dim = [[UIView alloc] initWithFrame:window.bounds];
+    vc.executionController = [self cpmController];
+    vc.calibration = [self cpmCalibrationProfile];
+    vc.roiOverlayView = [self cpmROIOverlay];
+    /* previewMode / layer limit / settle delay are restored by the panel itself, so the
+     * "never stored yet" case resolves to preview-only in exactly one place. */
+    UIImage *reference = [self currentImage];
+    if (reference) [vc loadReferenceImage:reference];
+
+    UIView *dim = [[UIView alloc] initWithFrame:root.bounds];
+    dim.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
     dim.backgroundColor = [[UIColor blackColor] colorWithAlphaComponent:0.6];
     dim.alpha = 0;
     dim.userInteractionEnabled = YES;
-    
-    UITapGestureRecognizer *tap = [[UITapGestureRecognizer alloc] initWithTarget:self action:@selector(hideAutoDrawPanel)];
+    UITapGestureRecognizer *tap = [[UITapGestureRecognizer alloc] initWithTarget:self action:@selector(closeAutoDrawPanel:)];
     [dim addGestureRecognizer:tap];
-    
-    CGFloat pw = MIN(340.0, window.bounds.size.width - 30.0);
-    CGFloat ph = MIN(500.0, window.bounds.size.height - 60.0);
+
+    CGFloat pw = MIN(360.0, root.bounds.size.width - 24.0);
+    CGFloat ph = MIN(root.bounds.size.height - 40.0, 620.0);
     vc.view.frame = CGRectMake(0, 0, pw, ph);
-    vc.view.center = CGPointMake(CGRectGetMidX(dim.bounds), CGRectGetMidY(dim.bounds));
-    vc.view.layer.cornerRadius = 16;
-    vc.view.clipsToBounds = YES;
-    vc.view.layer.shadowColor = [UIColor blackColor].CGColor;
-    vc.view.layer.shadowOpacity = 0.4;
-    vc.view.layer.shadowRadius = 20;
-    vc.view.layer.shadowOffset = CGSizeMake(0, 10);
-    
-    [window.rootViewController.view addSubview:dim];
-    [window.rootViewController.view addSubview:vc.view];
-    
-    [UIView animateWithDuration:0.3 animations:^{
-        dim.alpha = 1;
-        vc.view.transform = CGAffineTransformIdentity;
-    }];
-    
+    vc.view.center = CGPointMake(CGRectGetMidX(root.bounds), CGRectGetMidY(root.bounds));
+    vc.view.autoresizingMask = UIViewAutoresizingFlexibleTopMargin | UIViewAutoresizingFlexibleBottomMargin |
+                               UIViewAutoresizingFlexibleLeftMargin | UIViewAutoresizingFlexibleRightMargin;
+    [dim addSubview:vc.view];
+    [root addSubview:dim];
+
+    self.autoDrawDimView = dim;
     self.autoDrawViewController = vc;
+    [vc showControlsAnimated:NO];
+
+    [UIView animateWithDuration:0.25 animations:^{
+        dim.alpha = 1;
+    }];
+    [[self cpmController] refreshFromGame];
+}
+
+/// Tapping outside the panel closes it — it never stops a run that is in flight.
+- (void)closeAutoDrawPanel:(UIGestureRecognizer *)gesture {
+    CGPoint p = [gesture locationInView:self.autoDrawViewController.view];
+    if (CGRectContainsPoint(self.autoDrawViewController.view.bounds, p)) return;
+    [self hideAutoDrawPanel];
 }
 
 - (void)hideAutoDrawPanel {
@@ -2044,38 +2113,19 @@
         dispatch_async(dispatch_get_main_queue(), ^{ [self hideAutoDrawPanel]; });
         return;
     }
-    
-    UIView *dim = nil;
-    UIView *vcView = nil;
-    
-    if (self.autoDrawViewController) {
-        vcView = self.autoDrawViewController.view;
-    }
-    
-    for (UIView *subview in [self.overlayWindow.rootViewController.view subviews]) {
-        if ([subview isKindOfClass:[UIView class]] && subview.backgroundColor && subview.backgroundColor.alpha < 1.0) {
-            if (subview.alpha < 1.0 && subview.bounds.size.width > 100) {
-                dim = subview;
-                break;
-            }
-        }
-    }
-    
-    if (!dim && !vcView) return;
-    
+    UIView *dim = self.autoDrawDimView;
+    if (!dim) return;
+    self.autoDrawDimView = nil;
+    UIView *panelView = self.autoDrawViewController.view;
+    self.autoDrawViewController = nil;
     [UIView animateWithDuration:0.2 animations:^{
-        if (dim) dim.alpha = 0;
-        if (vcView) vcView.alpha = 0;
-    } completion:^(BOOL f) {
-        [vcView removeFromSuperview];
+        dim.alpha = 0;
+        panelView.transform = CGAffineTransformMakeScale(0.96, 0.96);
+    } completion:^(__unused BOOL finished) {
         [dim removeFromSuperview];
-        self.autoDrawViewController = nil;
-        self.executionController = nil;
     }];
-}
-
-- (void)autoDrawViewController:(id)controller {
-    [self hideAutoDrawPanel];
+    /* The controller stays alive: a run in flight must not be orphaned. */
+    [self autoDrawStatusChanged];
 }
 
 - (void)startAutoDrawWithImage:(UIImage *)image roiRect:(CGRect)roiRect {
@@ -2083,57 +2133,135 @@
         dispatch_async(dispatch_get_main_queue(), ^{ [self startAutoDrawWithImage:image roiRect:roiRect]; });
         return;
     }
-    
-    if (self.isAutoDrawRunning) {
-        [self stopAutoDraw];
-    }
-    
-    self.executionController = [[CPMExecutionController alloc] init];
-    self.executionController.delegate = self;
-    
-    [self.executionController startAutomationWithImage:image roiRect:roiRect];
-    
-    if (!self.autoDrawViewController) {
-        [self showAutoDrawPanel];
-    }
-    
-    [self showToast:@"Auto-Draw started"];
+    if (!image) { [self showToast:@"Önce görsel seçin"]; return; }
+
+    CPMExecutionController *controller = [self cpmController];
+    controller.calibration = [self cpmCalibrationProfile];
+    if (self.isAutoDrawRunning) [controller stopAutomation];
+    [controller startAutomationWithImage:image roiRect:roiRect];
+
+    if (!self.autoDrawViewController) [self showAutoDrawPanel];
+    [self showToast:@"Otomatik çizim başladı"];
 }
 
 - (void)pauseAutoDraw {
-    if ([self.executionController isPaused]) {
-        [self.executionController resumeAutomation];
-    } else {
-        [self.executionController pauseAutomation];
-    }
-    [self showToast:[self.executionController isPaused] ? @"Auto-Draw paused" : @"Auto-Draw resumed"];
+    CPMExecutionController *controller = [self cpmController];
+    if (controller.isPaused) [controller resumeAutomation];
+    else [controller pauseAutomation];
+    [self showToast:controller.isPaused ? @"Duraklatıldı" : @"Devam ediyor"];
+    [self autoDrawStatusChanged];
 }
 
 - (void)resumeAutoDraw {
-    [self pauseAutoDraw];
+    [[self cpmController] resumeAutomation];
+    [self autoDrawStatusChanged];
 }
 
 - (void)stopAutoDraw {
-    [self.executionController stopAutomation];
-    [self showToast:@"Auto-Draw stopped"];
-    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.0 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-        self.executionController = nil;
-    });
+    [[self cpmController] stopAutomation];
+    [self showToast:@"Durduruldu"];
+    [self autoDrawStatusChanged];
 }
 
 - (void)emergencyStopAutoDraw {
-    [self.executionController emergencyStop];
-    [self showToast:@"🚨 EMERGENCY STOP"];
-    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.5 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-        self.executionController = nil;
-    });
+    [[self cpmController] emergencyStop];
+    [self showToast:@"🚨 ACİL DURDURMA"];
+    [self autoDrawStatusChanged];
 }
 
 - (void)clearAutoDrawSession {
+    [self.executionController reset];
     self.executionController = nil;
-    self.autoDrawViewController = nil;
     [self hideAutoDrawPanel];
-    [self showToast:@"Session cleared"];
+    [self showToast:@"Oturum temizlendi"];
+}
+
+- (void)autoDrawStatusChanged {
+    CPMExecutionController *controller = self.executionController;
+    self.isAutoDrawRunning = controller.isRunning;
+    self.autoDrawProgress = controller.progress;
+}
+
+- (NSString *)cpmDiagnosticsReport {
+    NSMutableString *text = [NSMutableString string];
+    CPMIl2CppBridge *bridge = [CPMIl2CppBridge sharedBridge];
+    [text appendString:bridge.isAvailable ? ([bridge diagnosticsReport] ?: @"bridge ok")
+                                         : [NSString stringWithFormat:@"il2cpp kapalı: %@",
+                                            bridge.unavailableReason ?: @"bilinmiyor"]];
+    [text appendFormat:@"\nDokunma: %@", [CPMTouchInjector sharedInjector].backendDescription ?: @"?"];
+    [text appendFormat:@"\nKalibrasyon:\n%@", [[self cpmCalibrationProfile] validationReport]];
+    return text;
+}
+
+#pragma mark CPMAutoDrawViewControllerDelegate
+
+- (void)autoDrawControllerDidRequestImage:(id)controller {
+    __weak OverlayManager *weakSelf = self;
+    [SettingsViewController presentImagePickerWithCompletion:^(UIImage *image) {
+        OverlayManager *mgr = weakSelf;
+        if (!mgr || !image) return;
+        [mgr setOverlayImage:image];
+        if ([mgr.autoDrawViewController isKindOfClass:CPMAutoDrawViewController.class]) {
+            CPMAutoDrawViewController *panel = mgr.autoDrawViewController;
+            panel.referenceImage = image;
+            [panel loadReferenceImage:image];
+        }
+        [mgr showToast:@"Görsel seçildi"];
+    }];
+}
+
+- (void)autoDrawController:(id)controller didRequestROISelection:(BOOL)startFromCurrent {
+    CPMROIOverlayView *overlay = [self cpmROIOverlay];
+    if (!overlay) return;
+    overlay.delegate = self;
+    if (startFromCurrent && [self.autoDrawViewController isKindOfClass:CPMAutoDrawViewController.class]) {
+        CGRect saved = self.autoDrawViewController.canvasScreenRect;
+        if (!CGRectIsNull(saved) && !CGRectIsEmpty(saved)) [overlay showSelectedRect:saved];
+    }
+    self.autoDrawDimView.hidden = YES;         /* the drag needs the whole screen */
+    [overlay beginSelection];
+    [self showToast:@"Boyamayı sürükleyerek seçin"];
+}
+
+- (void)autoDrawControllerDidRequestStart:(id)controller { [self autoDrawStatusChanged]; }
+- (void)autoDrawControllerDidRequestPause:(id)controller { [self autoDrawStatusChanged]; }
+- (void)autoDrawControllerDidRequestStop:(id)controller { [self autoDrawStatusChanged]; }
+
+- (void)autoDrawControllerDidRequestEmergencyStop:(id)controller {
+    [self showToast:@"🚨 Durduruldu"];
+    [self autoDrawStatusChanged];
+}
+
+- (void)autoDrawController:(id)controller didUpdateProgress:(CGFloat)progress {
+    self.autoDrawProgress = progress;
+}
+
+- (void)autoDrawController:(id)controller didUpdateLayerCount:(NSUInteger)placed total:(NSUInteger)total {
+    (void)placed; (void)total;
+    [self autoDrawStatusChanged];
+}
+
+- (void)autoDrawController:(id)controller didEncounterError:(NSError *)error {
+    [self showToast:[NSString stringWithFormat:@"Hata: %@", error.localizedDescription ?: @"?"]];
+    [self autoDrawStatusChanged];
+}
+
+#pragma mark CPMROIOverlayViewDelegate
+
+- (void)roiOverlay:(CPMROIOverlayView *)overlay didFinishWithRect:(CGRect)rect {
+    self.autoDrawDimView.hidden = NO;
+    CPMUICalibration *cal = [self cpmCalibrationProfile];
+    cal.canvasRect = CGRectStandardize(rect);
+    [cal saveToUserDefaults];
+    if ([self.autoDrawViewController isKindOfClass:CPMAutoDrawViewController.class]) {
+        self.autoDrawViewController.canvasScreenRect = cal.canvasRect;
+        [self.autoDrawViewController refreshDiagnostics];
+    }
+    [self showToast:[NSString stringWithFormat:@"Kanvas: %.0f×%.0f pt", rect.size.width, rect.size.height]];
+}
+
+- (void)roiOverlayDidCancel:(CPMROIOverlayView *)overlay {
+    self.autoDrawDimView.hidden = NO;
 }
 
 - (void)showToast:(NSString *)text {

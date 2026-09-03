@@ -1,0 +1,337 @@
+{
+  "_comment": [
+    "What tools/cpm_il2cpp.py must extract from dump.cs.",
+    "Keys: classes are matched by 'namespace.Name' (Name may include the `1 / `2 generic arity).",
+    "fields/methods: '*' grabs everything in that category. Use '!name' to exclude.",
+    "optional: true downgrades a missing entry from 'build error' to 'warning' (game renames)."
+  ],
+  "classes": [
+    {
+      "id": "VinylsEditor",
+      "name": "CPM.Scripts.VinylDrawer.VinylsEditor",
+      "comment": "The vinyl (sticker) editor window; owns the sticker list and every slider.",
+      "fields": [
+        "_allStickers",
+        "_editingStickers",
+        "_currentSticker",
+        "_currentVinyl",
+        "_currentVinylsType",
+        "_currentOperation",
+        "_maxVinylsCount",
+        "_vinylsTypeId",
+        "_isEditingExisting",
+        "_saved",
+        "_isMerged",
+        "_currentStickersParent",
+        "_lastVinylOrder",
+        "_editorUI",
+        "_renderDirty",
+        "_isDragging",
+        "_groupParent",
+        "_currentPivotTransform",
+        "editUI",
+        "stickersWidget",
+        "stickersScrollBar",
+        "stickersScrollView",
+        "vinylsCountLabel",
+        "zoomSlider",
+        "rotationSlider",
+        "scaleSliderX",
+        "scaleSliderY",
+        "scaleSlider",
+        "joystickSlider",
+        "joystickUI",
+        "AngleInputField",
+        "ScaleXInputField",
+        "ScaleYInputField",
+        "angleText",
+        "scaleXText",
+        "scaleYText",
+        "VinylTransformEditPanel",
+        "sideCheckParent",
+        "scaleQuad",
+        "<HasVinyl>k__BackingField"
+      ],
+      "methods": [
+        "get_CurrentVinylsCount",
+        "get_CurrentVinyl",
+        "get_EditUIEnabled",
+        "get_IsGrouping",
+        "CreateSticker",
+        "UpdateStickers",
+        "UpdateCurrentVinyl",
+        "ChangeColor",
+        "SelectSticker",
+        "SaveVinyl",
+        "SaveOneVinyl",
+        "DeleteAllStikers",
+        "DeleteStickers",
+        "CancelOrDelete",
+        "InstantiateEditIcons",
+        "UpdateInputFieldsInfo",
+        "UpdateVinylAngleInfo",
+        "UpdateVinylWidthInfo",
+        "UpdateVinylHeightInfo",
+        "OnRelease",
+        "Scaling",
+        "Rotating",
+        "BackZ",
+        "ForwardZ",
+        "FlipX",
+        "LoadStickerData",
+        "ReorderSticker",
+        "CleanStuff",
+        "get_HasVinyl"
+      ]
+    },
+    {
+      "id": "VinylDrawer",
+      "name": "CPM.Scripts.VinylDrawer.VinylDrawer",
+      "comment": "Singleton that renders the vinyl canvas into a RenderTexture.",
+      "fields": [
+        "_instance",
+        "_container",
+        "_camera",
+        "_planeMaterial",
+        "_vinylPrefab",
+        "_vinylPrefabFonts",
+        "_factory"
+      ],
+      "methods": [
+        "get_ContainerChildCount",
+        "CreateVinyl",
+        "DeleteVinylContext",
+        "TakeSnapshot",
+        "FocusOnVinyls",
+        "GetVinylsParent",
+        "SetCamState",
+        "ForceCleanContainer",
+        "get_Position"
+      ]
+    },
+    {
+      "id": "VinylContainer",
+      "name": "CPM.Scripts.VinylDrawer.VinylContainer",
+      "fields": [
+        "_vinylsHolders"
+      ],
+      "methods": [
+        "get_ChildCount",
+        "AddVinyl",
+        "DoesContextExist",
+        "TryGetContext"
+      ]
+    },
+    {
+      "id": "VinylsEditorUI",
+      "name": "CPM.Scripts.VinylDrawer.VinylsEditorUI",
+      "fields": [
+        "editPlane",
+        "visualIcons",
+        "posCollider",
+        "rotCollider",
+        "scaleCollider",
+        "posIcon",
+        "rotIcon",
+        "scaleIcon",
+        "middlePoint"
+      ],
+      "methods": []
+    },
+    {
+      "id": "StickerItem",
+      "name": "StickerItem",
+      "namespace": "",
+      "comment": "One vinyl layer. This is the exact per-layer model the editor edits.",
+      "fields": [
+        "Order",
+        "stckerIndex",
+        "position",
+        "positionIcon",
+        "euler",
+        "scale",
+        "_color",
+        "ThisVinyl",
+        "yAngle",
+        "xAngle",
+        "flipX",
+        "InitialColorBackround",
+        "isText",
+        "text",
+        "fontIndex",
+        "italic",
+        "bold",
+        "oldIndex",
+        "texture",
+        "sprite"
+      ],
+      "methods": [
+        "Select",
+        "UpdateOrder",
+        "get_color",
+        "set_color",
+        "get_CalculatedColor"
+      ]
+    },
+    {
+      "id": "SelectSticker",
+      "name": "SelectSticker",
+      "fields": [
+        "IdText",
+        "_generalControl",
+        "_vinylsEditor",
+        "StickerSelected",
+        "<StickerIndex>k__BackingField",
+        "_selectWheelCts"
+      ],
+      "methods": [
+        "get_StickerIndex",
+        "set_StickerIndex"
+      ],
+      "optional": true
+    },
+    {
+      "id": "MoveSliderToTarget",
+      "name": "MoveSliderToTarget",
+      "comment": "NGUI slider driver used by the editor for scale/rotation/zoom.",
+      "fields": [
+        "target",
+        "speed",
+        "slider",
+        "touchingSlider"
+      ],
+      "methods": [
+        "onTouched",
+        "onRelease"
+      ]
+    },
+    {
+      "id": "JoystickNGUI",
+      "name": "JoystickNGUI",
+      "comment": "The move-joystick widget (position handle).",
+      "fields": [
+        "background",
+        "center",
+        "radius",
+        "isFloating",
+        "constraint",
+        "isDrag"
+      ],
+      "methods": [
+        "ResetMovingData"
+      ]
+    },
+    {
+      "id": "UISlider",
+      "name": "UISlider",
+      "namespace": "",
+      "fields": [
+        "foreground",
+        "rawValue",
+        "direction"
+      ],
+      "methods": [
+        "get_sliderValue",
+        "set_sliderValue"
+      ]
+    },
+    {
+      "id": "UIInput",
+      "name": "UIInput",
+      "namespace": "",
+      "fields": [
+        "mValue",
+        "label",
+        "characterLimit",
+        "inputType",
+        "validation",
+        "onSubmit",
+        "onChange"
+      ],
+      "methods": [],
+      "optional": true
+    },
+    {
+      "id": "VinylData",
+      "name": "DataEntities.Vinyl.VinylData",
+      "comment": "The serialized per-layer record that ends up on disk / in the save file.",
+      "fields": [
+        "position",
+        "scaleRotation",
+        "iconPosition",
+        "text",
+        "color",
+        "packedData"
+      ],
+      "methods": []
+    },
+    {
+      "id": "OneVynil",
+      "name": "CPM.Database.OneVynil",
+      "fields": [
+        "vectors",
+        "v",
+        "floats",
+        "text"
+      ],
+      "methods": []
+    },
+    {
+      "id": "UnityObject",
+      "name": "UnityEngine.Object",
+      "fields": [
+        "m_CachedPtr"
+      ],
+      "methods": [
+        "GetInstanceID"
+      ],
+      "comment": "m_CachedPtr lets the bridge sanity-check that a pointer is a live Unity object."
+    },
+    {
+      "id": "GameObject",
+      "name": "UnityEngine.GameObject",
+      "fields": [],
+      "methods": [
+        "get_activeSelf",
+        "SetActive"
+      ],
+      "optional": true
+    },
+    {
+      "id": "List1",
+      "name": "System.Collections.Generic.List`1",
+      "comment": "Offsets here are runtime-only: the dump lists generic definitions with 0x0.",
+      "fields": [
+        "_items",
+        "_size",
+        "_version"
+      ],
+      "methods": [
+        "get_Count"
+      ]
+    },
+    {
+      "id": "Dictionary2",
+      "name": "System.Collections.Generic.Dictionary`2",
+      "fields": [
+        "_count",
+        "_buckets",
+        "_entries"
+      ],
+      "methods": [
+        "get_Count"
+      ],
+      "optional": true
+    }
+  ],
+  "enums": [
+    {
+      "id": "VinylsType",
+      "name": "CPM.Scripts.VinylDrawer.VinylsType"
+    },
+    {
+      "id": "VinylsEditorOperation",
+      "name": "CPM.Scripts.VinylDrawer.VinylsEditorOperation"
+    }
+  ]
+}

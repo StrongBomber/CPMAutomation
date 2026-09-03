@@ -23,13 +23,16 @@ CORE_SOURCES = \
     OverlayView.m \
     SettingsViewController.m
 
-# CPM Automation sources (all .m files in Core and UI directories)
+# CPM Automation sources. Keep this list explicit: a silently missing file links fine
+# and only shows up as "unknown selector" at runtime inside the game.
 CPM_CORE_SOURCES = \
     Core/CPMVinylShape.m \
     Core/CPMShapeDecomposer.m \
     Core/CPMTouchInjector.m \
     Core/CPMExecutionController.m \
-    Core/CPMUICalibration.m
+    Core/CPMUICalibration.m \
+    Core/CPMGameLayout.m \
+    Core/CPMIl2CppBridge.m
 
 CPM_UI_SOURCES = \
     UI/CPMAutoDrawViewController.m \
@@ -67,7 +70,7 @@ LDFLAGS = -isysroot "$(SDK)" \
           -framework IOKit \
           -install_name @executable_path/$(TARGET_NAME)
 
-.PHONY: all clean check-sdk check
+.PHONY: all clean check-sdk check layout layout-check anchors anchors-check sources
 
 all: check-sdk
 	@echo "[CC/LD] arm64"
@@ -101,8 +104,42 @@ check-sdk:
 	fi
 	@echo "[SDK] $(SDK)"
 
-check:
-	@python3 scripts/check_objc.py 2>/dev/null || true
+# --- generated code -----------------------------------------------------------
+# Core/CPMGameLayout.{h,m} come from the IL2CPP dump; Core/CPMAnchorsDefault.h comes
+# from Resources/cpm_ui_anchors.json. Both are committed, so a plain `make` works
+# without dump.cs; these targets regenerate them.
+DUMP ?= dump.cs
+
+# python3 with the libclang bindings, used by the static checker. `make check` works without
+# it (the checker prints SKIP); install with `python3 -m pip install libclang`.
+CPM_PYTHON ?= $(shell test -x /tmp/venv/bin/python && echo /tmp/venv/bin/python || echo python3)
+
+layout:
+	@test -f "$(DUMP)" || { echo "ERROR: $(DUMP) not found (set DUMP=/path/to/dump.cs)"; exit 1; }
+	@$(CPM_PYTHON) tools/cpm_il2cpp.py generate --dump "$(DUMP)"
+
+layout-check:
+	@test -f "$(DUMP)" || { echo "SKIP layout check: $(DUMP) not present"; exit 0; }
+	@$(CPM_PYTHON) tools/cpm_il2cpp.py check --dump "$(DUMP)"
+
+anchors:
+	@$(CPM_PYTHON) tools/cpm_anchors.py generate
+
+anchors-check:
+	@$(CPM_PYTHON) tools/cpm_anchors.py check
+
+# --- static checks -----------------------------------------------------------
+check: anchors-check layout-check
+	@python3 scripts/check_objc.py
+	@$(CPM_PYTHON) tools/cpm_check.py --overlay
+
+# Resolve every source the dylib needs (catches a missing file before the linker).
+sources:
+	@for f in $(SOURCES); do \
+	  if [ ! -f "$$f" ]; then echo "ERROR: missing source $$f"; exit 1; fi; \
+	  echo "  $$f"; \
+	done
+	@echo "[SOURCES] $(words $(SOURCES)) files"
 
 clean:
 	@rm -f $(SOURCES:.m=.o) $(TARGET_NAME) $(TARGET_NAME).arm64 $(TARGET_NAME).arm64e
@@ -137,11 +174,12 @@ test:
 cpm-info:
 	@echo "CPM Image-to-Vinyl Automation Module"
 	@echo "======================================"
-	@echo "Max layers: 200 (configurable up to 300)"
-	@echo "Touch delay: 15ms (configurable 5-100ms)"
-	@echo "Color quantization: K-Means (8 clusters)"
-	@echo "Shape types: Square, Circle, Triangle, Line, Polygon"
-	@echo "UI calibration: cpm_ui_anchors.json"
+	@echo "Game layout:  Core/CPMGameLayout.[hm]  (regenerate: make layout DUMP=dump.cs)"
+	@$(CPM_PYTHON) tools/cpm_show_layout.py
+	@echo "Anchors:      Core/CPMAnchorsDefault.h (regenerate: make anchors)"
+	@echo "Shape types:  Square, Circle, Triangle, Line, Polygon, Text"
+	@echo "Touch:        synthetic UIEvent to the game's input view (IOHID is opt-in)"
+	@echo "Layer cap:    VinylsEditor._maxVinylsCount when the il2cpp bridge resolves"
 
 # Build and display info
 info:

@@ -1,108 +1,206 @@
 {
-  "calibrationID": "iphone14pro_portrait_default",
-  "screenSize": {"width": 390, "height": 844},
+  "calibrationID": "cpm_landscape_reference_unverified",
+  "screenSize": {
+    "width": 844.0,
+    "height": 390.0
+  },
   "scaleFactor": 1.0,
-  "isLandscape": false,
+  "isLandscape": true,
+  "canvasRect": {
+    "x": 190,
+    "y": 24,
+    "width": 430,
+    "height": 330
+  },
+  "_note": "Reference points for the vinyl editor in LANDSCAPE. Nobody measured these on the current game build: they are a starting point. Confirm them with the ROI / anchor editor in the overlay (the values you save there override this table).",
   "anchors": [
     {
       "type": 0,
-      "center": {"x": 340, "y": 20},
-      "size": {"width": 50, "height": 50},
-      "displayName": "Add Shape",
+      "center": {
+        "x": 806,
+        "y": 44
+      },
+      "size": {
+        "width": 60,
+        "height": 60
+      },
+      "displayName": "Add Shape  (VinylsEditor: CreateSticker)",
       "isValid": true
     },
     {
       "type": 1,
-      "center": {"x": 60, "y": 120},
-      "size": {"width": 80, "height": 300},
-      "displayName": "Shape Selector",
+      "center": {
+        "x": 70,
+        "y": 196
+      },
+      "size": {
+        "width": 124,
+        "height": 300
+      },
+      "displayName": "Shape Selector  (VinylsEditorUI.stickersWidget)",
       "isValid": true
     },
     {
       "type": 2,
-      "center": {"x": 320, "y": 150},
-      "size": {"width": 60, "height": 60},
-      "displayName": "Color Picker",
+      "center": {
+        "x": 776,
+        "y": 120
+      },
+      "size": {
+        "width": 72,
+        "height": 72
+      },
+      "displayName": "Color Picker  (VinylsEditor.ChangeColor)",
       "isValid": true
     },
     {
       "type": 3,
-      "center": {"x": 340, "y": 280},
-      "size": {"width": 200, "height": 20},
+      "center": {
+        "x": 730,
+        "y": 184
+      },
+      "size": {
+        "width": 200,
+        "height": 22
+      },
       "displayName": "Red Slider",
-      "sliderMinX": 240, "sliderMaxX": 440,
-      "sliderMinY": 280, "sliderMaxY": 280,
-      "isValid": true
+      "isValid": true,
+      "sliderMinX": 630,
+      "sliderMaxX": 830,
+      "sliderMinY": 184,
+      "sliderMaxY": 184
     },
     {
       "type": 4,
-      "center": {"x": 340, "y": 320},
-      "size": {"width": 200, "height": 20},
+      "center": {
+        "x": 730,
+        "y": 216
+      },
+      "size": {
+        "width": 200,
+        "height": 22
+      },
       "displayName": "Green Slider",
-      "sliderMinX": 240, "sliderMaxX": 440,
-      "sliderMinY": 320, "sliderMaxY": 320,
-      "isValid": true
+      "isValid": true,
+      "sliderMinX": 630,
+      "sliderMaxX": 830,
+      "sliderMinY": 216,
+      "sliderMaxY": 216
     },
     {
       "type": 5,
-      "center": {"x": 340, "y": 360},
-      "size": {"width": 200, "height": 20},
+      "center": {
+        "x": 730,
+        "y": 248
+      },
+      "size": {
+        "width": 200,
+        "height": 22
+      },
       "displayName": "Blue Slider",
-      "sliderMinX": 240, "sliderMaxX": 440,
-      "sliderMinY": 360, "sliderMaxY": 360,
-      "isValid": true
+      "isValid": true,
+      "sliderMinX": 630,
+      "sliderMaxX": 830,
+      "sliderMinY": 248,
+      "sliderMaxY": 248
     },
     {
       "type": 6,
-      "center": {"x": 340, "y": 420},
-      "size": {"width": 200, "height": 20},
-      "displayName": "Scale Slider",
-      "sliderMinX": 240, "sliderMaxX": 440,
-      "sliderMinY": 420, "sliderMaxY": 420,
-      "isValid": true
+      "center": {
+        "x": 730,
+        "y": 296
+      },
+      "size": {
+        "width": 200,
+        "height": 22
+      },
+      "displayName": "Scale Slider  (scaleSlider/scaleX)",
+      "isValid": true,
+      "sliderMinX": 630,
+      "sliderMaxX": 830,
+      "sliderMinY": 296,
+      "sliderMaxY": 296
     },
     {
       "type": 7,
-      "center": {"x": 340, "y": 460},
-      "size": {"width": 200, "height": 20},
-      "displayName": "Rotate Slider",
-      "sliderMinX": 240, "sliderMaxX": 440,
-      "sliderMinY": 460, "sliderMaxY": 460,
-      "isValid": true
+      "center": {
+        "x": 730,
+        "y": 328
+      },
+      "size": {
+        "width": 200,
+        "height": 22
+      },
+      "displayName": "Rotate Slider  (rotationSlider)",
+      "isValid": true,
+      "sliderMinX": 630,
+      "sliderMaxX": 830,
+      "sliderMinY": 328,
+      "sliderMaxY": 328
     },
     {
       "type": 8,
-      "center": {"x": 340, "y": 520},
-      "size": {"width": 80, "height": 80},
-      "displayName": "Move Joystick",
+      "center": {
+        "x": 300,
+        "y": 320
+      },
+      "size": {
+        "width": 96,
+        "height": 96
+      },
+      "displayName": "Move Joystick  (JoystickNGUI, joystickSlider)",
       "isValid": true
     },
     {
       "type": 9,
-      "center": {"x": 340, "y": 680},
-      "size": {"width": 80, "height": 40},
-      "displayName": "Confirm",
+      "center": {
+        "x": 780,
+        "y": 364
+      },
+      "size": {
+        "width": 96,
+        "height": 44
+      },
+      "displayName": "Confirm  (SaveVinyl)",
       "isValid": true
     },
     {
       "type": 10,
-      "center": {"x": 260, "y": 680},
-      "size": {"width": 80, "height": 40},
-      "displayName": "Cancel",
+      "center": {
+        "x": 664,
+        "y": 364
+      },
+      "size": {
+        "width": 96,
+        "height": 44
+      },
+      "displayName": "Cancel  (CleanStuff)",
       "isValid": true
     },
     {
       "type": 11,
-      "center": {"x": 100, "y": 400},
-      "size": {"width": 120, "height": 300},
-      "displayName": "Layer List",
+      "center": {
+        "x": 24,
+        "y": 196
+      },
+      "size": {
+        "width": 44,
+        "height": 300
+      },
+      "displayName": "Layer List  (stickersScrollBar)",
       "isValid": true
     },
     {
       "type": 12,
-      "center": {"x": 340, "y": 730},
-      "size": {"width": 40, "height": 40},
-      "displayName": "Zoom Control",
+      "center": {
+        "x": 600,
+        "y": 44
+      },
+      "size": {
+        "width": 96,
+        "height": 40
+      },
+      "displayName": "Zoom  (zoomSlider)",
       "isValid": true
     }
   ]

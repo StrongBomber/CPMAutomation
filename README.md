@@ -1,285 +1,236 @@
-# OverlayTweak v2.0 - CPM Image-to-Vinyl Automation
+# OverlayTweak v2.1.0 — CPM Image-to-Vinyl Automation
 
-## Overview
+iOS-only floating overlay tweak for **Car Parking Multiplayer (CPM)** that turns any picture
+into vinyl layers inside the game's own vinyl editor. It is *non-destructive*: the game binary
+is never patched, no memory is written, and the only thing the tweak sends to the game is a
+touch — after you approve a plan.
 
-OverlayTweak v2.0 is an iOS floating image overlay tweak that has been extended into a fully automated, AI-driven **Image-to-Vinyl Automation Tool** for the game **"Car Parking Multiplayer" (CPM)**.
+> **Android is gone.** The old `build-android.yml` workflow built an `android/` project that
+> never existed in this repo. The tweak is injected into the iOS app bundle, and every
+> generated artifact (game layout, UI anchors) is iOS/landscape-only.
 
-This extended version builds upon the original OverlayTweak's floating overlay capabilities and adds 5 core modules for automated car vinyl creation:
+---
 
-1. **Floating Overlay UI & ROI Selector** - Extended overlay with region-of-interest selection
-2. **Image Vectorization & Shape Decomposer** - CV engine to decompose images into CPM-compatible primitives
-3. **CPM UI Layout Mapper & Calibration Engine** - JSON-based UI coordinate mapping
-4. **Touch Injection & Macro Automation System** - IOHIDEvent touch synthesis for CPM vinyl editor
-5. **Execution Controller & Safety System** - Thread-safe execution with emergency stop
-
-## Project Structure
+## 1. What it does
 
 ```
-OverlayTweak/
-├── Core/
-│   ├── CPMVinylShape.h/.m         # CPM-compatible vinyl shape data model
-│   ├── CPMShapeDecomposer.h/.m    # Image→shapes engine (K-Means + contour detection)
-│   ├── CPMTouchInjector.h/.m      # IOHIDEvent touch synthesis engine
-│   ├── CPMExecutionController.h/.m # Threaded execution + safety system
-│   └── CPMUICalibration.h/.m      # UI calibration manager (JSON anchors)
-├── UI/
-│   ├── CPMAutoDrawViewController.h/.m  # Control panel UI
-│   └── CPMROIOverlayView.h/.m         # ROI selector overlay
-├── Resources/
-│   └── cpm_ui_anchors.json         # Default UI calibration data
-├── Makefile (updated for CPM modules)
-├── OverlayCommon.h (extended with CPM constants)
-├── OverlayEntry.m (extended)
-├── OverlayManager.h/.m (extended with CPM automation APIs)
-├── OverlayView.h/.m (extended with ROI selection)
-├── SettingsViewController.h/.m (extended)
-└── README.md
+ reference image                    CPM vinyl editor
+       │                                   ▲
+       ▼                                   │ touches
+ ┌──────────────┐   shapes   ┌──────────────┴─────────────┐
+ │ Shape        │ ─────────► │ Execution controller       │
+ │ decomposer   │            │ (step machine, dry-run)    │
+ └──────────────┘            └──────────────┬─────────────┘
+       ▲                                    │ screen points
+       │ ROI in image space                 ▼
+ ┌─────┴────────────┐            ┌──────────────────────────┐
+ │ ROI overlay      │            │ Touch injector           │
+ │ (drag a box)     │            │ synthetic UIEvent → game │
+ └──────────────────┘            └──────────────────────────┘
+       ▲
+       │  canvas rect (points)
+ ┌─────┴────────────────┐        ┌──────────────────────────────┐
+ │ UI calibration       │◄──────►│ il2cpp bridge (read-only)    │
+ │ anchors + screen map │        │ dump.cs offsets, layer count │
+ └──────────────────────┘        └──────────────────────────────┘
 ```
 
-## Features
+* **Shape decomposer** (`Core/CPMShapeDecomposer.m`) — quantises the ROI to a small palette,
+  runs 8-connected component labelling per colour, classifies each blob
+  (square / circle / triangle / line / polygon), and caps the result at the game's layer budget.
+* **Vinyl model** (`Core/CPMVinylShape.m`) — one layer = position, scale, rotation, per-channel
+  RGBA, z-order. Converts to the dictionary form the game's `VinylData` uses.
+* **Execution controller** (`Core/CPMExecutionController.m`) — `Idle → LoadingImage →
+  DecomposingImage → Calibrating → PlacingLayers → Verifying → Finished`, with pause, stop,
+  emergency stop, progress, and per-step logging.
+* **Touch injector** (`Core/CPMTouchInjector.m`) — delivers taps/drags/slider drags. Default
+  backend builds `UITouch`/`UIEvent` stand-ins and calls `touchesBegan/Moved/Ended:` on the
+  game's own input view (no entitlements needed); IOHID is opt-in; if neither works the
+  injector reports *visual only* instead of pretending to succeed.
+* **UI calibration** (`Core/CPMUICalibration.m`) — maps the reference screenshot space to the
+  current screen, holds the editor-button anchors, and persists itself to `NSUserDefaults`.
+* **il2cpp bridge** (`Core/CPMIl2CppBridge.m`) — read-only look-up of the game's own class
+  layout, resolved from `dump.cs` at build time.
 
-### Core OverlayTweak (Preserved)
-- Scene-attached overlay window (iOS 13+), doesn't steal host key window
-- Passthrough hit-testing when locked
-- PHPicker image import + clipboard paste
-- Overlay frame follows photo aspect ratio
-- Card-based settings panel (v1.6)
-- Opacity, scale, rotation, flip H/V, crop, warp, perspective, color pick
-- Lock mode, hide/show overlay, edge tab
-- Images saved as JPEG on disk
+## 2. The game structure comes from `dump.cs`
 
-### New CPM Automation Features
+`dump.cs` (the Il2CppDumper output committed in this repo) is the only authority about the
+game's internals. Nothing about `VinylsEditor`, `VinylData`, `StickerItem`, `JoystickNGUI`,
+`MoveSliderToTarget` etc. is guessed.
 
-#### 1. ROI Selector
-- Interactive bounding box/region-of-interest selector for defining drawing area on the target car
-- Drag to select, double-tap to clear
-- Visual overlay with guide lines and center crosshair
+```
+dump.cs ──► tools/cpm_il2cpp.py ──► Resources/cpm_il2cpp_layout.json
+   spec: tools/cpm_layout_spec.json          │
+                                             ▼
+                                  Core/CPMGameLayout.{h,m}   (committed)
+```
 
-#### 2. Shape Decomposer (CV Engine)
-- **K-Means Color Quantization** (Accelerate framework) - reduces image to 6-12 key colors
-- **Sobel Edge Detection** - finds edges in the ROI
-- **8-Connected Contour Tracing** - extracts shape boundaries
-- **Douglas-Peucker Simplification** - simplifies contours to essential points
-- **Shape Classification** - identifies circles, rectangles, triangles, lines, polygons
-- **Ear Clipping Triangulation** - breaks complex polygons into triangles
-- Configurable max shapes (50-300, matching CPM layer limits)
-- Progress callbacks during processing
+* `make layout DUMP=dump.cs` regenerates the layout; `make layout-check` verifies the
+  committed header still matches the dump (class, field offsets, enum values, dump sha256).
+* Static fields are recorded as `offset 0x0` + `isStatic`, and the runtime never dereferences
+  that offset — it calls the `il2cpp_*` static accessors, because Il2CppDumper's static offsets
+  are image-relative, not instance offsets.
+* At runtime the bridge re-reads the same offsets through `il2cpp` and compares them with the
+  compiled-in values. A mismatch increments `layoutDriftCount` and marks the readout
+  `layoutStale`, so the panel says *"game updated — layout drifted"* instead of tapping at
+  wrong coordinates. If the game was stripped of `il2cpp` exports, the bridge reports why and
+  every consumer degrades to blind touch mode; it never invokes game code and never crashes.
 
-#### 3. UI Calibration
-- JSON-based anchor file (`cpm_ui_anchors.json`) mapping CPM vinyl editor UI elements:
-  - Add Shape button
-  - Shape Selector menu
-  - Color Picker
-  - RGB Sliders (Red, Green, Blue)
-  - Scale/Rotate sliders
-  - Move Joystick
-  - Confirm/Cancel buttons
-  - Layer List view
-  - Zoom control
-- Configurable per device screen size and orientation
-- Save/load from UserDefaults for persistence
+The same idea covers the editor UI geometry: `Resources/cpm_ui_anchors.json` (13 anchors on a
+844 × 390 landscape reference) is compiled into `Core/CPMAnchorsDefault.h` by
+`make anchors`. The dylib is injected into the game's bundle, so JSON is **not** read at
+runtime — editing the JSON without running `make anchors` changes nothing.
 
-#### 4. Touch Injection Engine
-- IOHIDEvent-based touch synthesis (for jailbreak/entitled environments)
-- Supports tap, drag, long-press, slider-drag gestures
-- Configurable touch delay (5-100ms) to match CPM UI processing speed
-- Sequence execution with completion callbacks
-- Emergency stop capability
+## 3. Building
 
-#### 5. Execution Controller
-- Background thread execution (NSOperationQueue)
-- Real-time progress tracking (0.0-1.0)
-- Layer count tracking (placed/total)
-- Pause/Resume functionality
-- Emergency stop with immediate halt
-- Delegate/callback pattern for UI updates
-- State machine: Idle → Loading → Decomposing → Placing → Completed/Paused/Stopped/Failed
-
-#### 6. Control Panel UI
-- Load Reference Image button
-- Select ROI Region button
-- Layer Limit slider (50-300)
-- Touch Delay slider (5-100ms)
-- Progress bar
-- Status text
-- Layer count display
-- Start/Pause/Stop buttons
-- Emergency stop via long-press on overlay
-
-## Build Instructions
-
-### Prerequisites
-- macOS with Xcode installed
-- iOS SDK (via `xcode-select`)
-- For touch injection: jailbreak device or appropriate entitlements
-
-### Building
+### On macOS (needs Xcode)
 
 ```bash
-chmod +x build_macos.sh
-./build_macos.sh
+xcode-select -s /Applications/Xcode.app   # or a full Xcode_16.x.app
+make            # → Overlay.dylib (arm64, +arm64e when the arch compiles)
+make check      # anchors + layout + repo checks + static parse of every source
+make cpm-info   # what the generated headers actually contain
 ```
 
-Or using make:
+`Overlay.dylib` is installed next to the game's binary (`TrollStore`, Sideloadly, or a
+jailbreak `.dylib` loader). `make inject IPA_PATH=... ` re-packs an IPA when `tools/insert_dylib`
+is available.
+
+### Without Xcode (Linux CI box, review, quick edit)
 
 ```bash
-make
+python3 -m pip install libclang          # or: brew install llvm
+make check
 ```
 
-### Injecting into an IPA
+`tools/cpm_check.py` parses every `.m` in the dylib against a stub iOS SDK
+(`tools/sdkstub/`) with libclang — it catches typos, missing selectors, wrong property
+attributes and ARC/nullability mistakes, which is exactly what breaks a tweak between two
+macOS builds. It is a **lint gate, not a linker**: `make` on macOS stays the authoritative
+build. Run the whole set with `make check`; run one file with
+`python3 tools/cpm_check.py OverlayManager.m`.
 
-Requires `insert_dylib`:
+### CI
 
-```bash
-mkdir -p tools
-git clone https://github.com/tyilo/insert_dylib.git /tmp/insert_dylib
-cc /tmp/insert_dylib/insert_dylib/main.c -o tools/insert_dylib
+`ci/build.yml` is the canonical workflow; `.github/workflows/build.yml` is a byte-for-byte
+mirror (GitHub only reads that path). It runs on `macos-15`, checks out with
+`actions/checkout@v4`, runs `make check`, `make clean`, `make`, and uploads `Overlay.dylib`
+with `actions/upload-artifact@v4`.
 
-make inject IPA_PATH=/path/to/CPM.ipa
+## 4. Using it in game
+
+The panel is Turkish, like the rest of the tweak; its diagnostics/log rows stay English on
+purpose, because they quote internal names (class, offset, backend).
+
+1. Open the vinyl editor in CPM — the panel assumes the editor's landscape layout.
+2. Tap the overlay menu (⚙ kenar sekmesi) → **Otomatik çizim** in the quick-button hub.
+3. **Görsel yükle** — the shared PHPicker opens; the chosen photo also becomes the overlay
+   image, so crop / warp / perspective tools can be applied before drawing. **Temizle** drops it.
+4. **Boya alanını seç (ROI)** — drag the box over the part of the *car* the artwork should
+   cover, then **Bölgeyi onayla**. That rectangle becomes the calibration canvas rect and is
+   stored with the anchors.
+5. **Planı önizle** runs the decomposition only: the log reports how many layers were planned,
+   which were dropped for the budget, and the overlay shows the plan — no touches.
+6. **Katman sınırı** (the label prints the game's own cap next to your limit, e.g.
+   `Katman sınırı: 42 (oyun: 6 / 50 kullanımda)`) and **Yerleşme gecikmesi** (how long the run
+   waits for the UI to settle; 15 ms is the floor, not a good default).
+7. **Sadece önizleme (dokunuş yok)** is ON for a first run: the plan is computed and the finger
+   positions are drawn, but nothing is injected. Switch it off when the preview matches the car.
+   **Bitince Onay'a bas** makes the run tap the editor's Confirm button at the end.
+8. **BAŞLAT** → progress bar + `Katman: n / m`. **Duraklat / Devam / Durdur** work during the
+   run; **ACİL DURDUR** (also a long-press on the overlay) drains the queue immediately.
+
+Hiding the panel does not stop a running session: the controller is owned by
+`OverlayManager`, so the run keeps going (and keeps logging) while you look at the car.
+
+## 5. Persistence keys
+
+| Key | Owner | Meaning |
+|-----|-------|---------|
+| `cpm_preview_only` | panel | dry-run switch (unset ⇒ ON, first run never touches the game) |
+| `cpm_layer_limit` | panel | max layers per vinyl |
+| `cpm_touch_delay_ms` | panel | settle delay between touches |
+| `cpm_autosave_vinyl` | panel | tap the editor's Confirm button at the end |
+| `cpm_ui_anchors` / `cpm_calibration_version` | calibration | anchors, reference space, canvas rect |
+| `cpm_roi_rect` | manager | last confirmed ROI |
+| `cpm_autodraw_active` / `cpm_autodraw_paused` | manager | run state across panel open/close |
+| `cpm_last_session_shapes` | controller | last decomposition (debug) |
+| `cpm_emergency_stop` | injector | latched stop flag |
+| `cpm_use_iohid_backend` | injector | opt into the IOHID backend (needs entitlements) |
+
+## 6. Safety model
+
+* **Read-only** game introspection: the bridge only calls `il2cpp_class_from_name`,
+  `il2cpp_field_get_offset` and friends. No `il2cpp_runtime_invoke`, no hooks, no writes.
+* **Touches are the only write path** into the game, and they are gated behind the preview
+  switch plus an explicit Start tap.
+* **No binary patching**: nothing in this repo edits the IPA's Mach-O other than the standard
+  `install_name` insertion performed by `make inject` on *your* copy.
+* **Layer budget**: the controller stops at `min(user limit, game cap − safety margin)` and
+  refuses to start when calibration is missing and `requiresVerifiedCalibration` is on.
+* Everything runs on a serial queue; the UI is only touched from the main thread.
+
+## 7. Layout
+
+```
+OverlayEntry.m              constructor + OVERLAY_TARGET_BUNDLE_ID guard + delayed setup
+OverlayManager.{h,m}        overlay window, quick hub, CPM wiring (panel + controller)
+OverlayView.{h,m}           image view: crop / warp / perspective / colour pick
+SettingsViewController.{h,m} card settings, shared PHPicker path
+OverlayCommon.h             version, defaults keys, logging, helpers
+
+Core/CPMVinylShape          one vinyl layer
+Core/CPMShapeDecomposer     image → layers
+Core/CPMExecutionController step machine, dry-run, progress, logs
+Core/CPMTouchInjector       touch delivery (synthetic UIEvent / IOHID / visual-only)
+Core/CPMUICalibration       anchors + screen↔canvas mapping + persistence
+Core/CPMIl2CppBridge        read-only game introspection + drift detection
+Core/CPMGameLayout          generated offsets table (from dump.cs)
+Core/CPMAnchorsDefault.h    generated anchor table (from Resources/cpm_ui_anchors.json)
+
+UI/CPMAutoDrawViewController  the panel
+UI/CPMROIOverlayView          ROI selector
+
+Resources/cpm_il2cpp_layout.json  generated, kept for auditability
+Resources/cpm_ui_anchors.json     editable anchor source
+tools/cpm_il2cpp.py               dump.cs → layout (generate | check | show | selftest)
+tools/cpm_anchors.py              JSON → anchor header (generate | check)
+tools/cpm_check.py                libclang static check over the stub SDK
+tools/cpm_show_layout.py          summary for `make cpm-info`
+scripts/check_objc.py             repo-hygiene rules the CI enforces
 ```
 
-This produces `CPM_injected.ipa` which can be installed via TrollStore.
+## 8. Known limits
 
-## Usage
+* **Backend reach.** Synthetic `UIEvent` delivery works in-process on any injected build, but a
+  game that polls raw HID instead of `Input.touches` would need the IOHID path (entitlements).
+  The panel prints which backend it got — believe that line, not the progress bar.
+* **Layer budget.** CPM's editor caps how many vinyls one car holds; the generator reads that
+  cap when the bridge resolves, otherwise the user limit applies. Shapes above the cap are
+  dropped and reported (`droppedShapeCount`), not silently skipped.
+* **Fine art.** Photographic input degrades: the game offers flat primitives, so the
+  decomposition prefers large regions and a small palette. Detailed logos are better drawn with
+  `configForDetailedLogoWithMaxLayers:` and accepted as an approximation.
+* **Calibration is device/orientation specific.** The anchors are measured in CPM's landscape
+  vinyl editor; a rotated or resized editor needs a fresh ROI (or edited JSON + `make anchors`).
 
-### Basic Workflow
+## 9. Troubleshooting
 
-1. **Launch CPM** with the injected OverlayTweak dylib
-2. **Tap the gear icon (⚙️)** to open settings or the new auto-draw panel
-3. **Load Reference Image** - Pick an image from Photos or paste from clipboard
-4. **Select ROI Region** - Drag to define the drawing area on the car body
-5. **Configure Settings**:
-   - Set max layer limit (default 200, max 300)
-   - Adjust touch delay if needed (default 15ms)
-6. **Start Auto-Draw** - The automation begins:
-   - Image decomposition (K-Means + contour detection)
-   - Shape placement via touch injection into CPM editor
-7. **Monitor Progress** - Watch the progress bar and layer count
-8. **Pause/Resume/Stop** as needed via control panel buttons
+| Symptom | Check |
+|---------|-------|
+| overlay never appears | Console for `[OverlayTweak]` / `[CPM-Automation]` logs; is the dylib load command present (`LC_LOAD_DYLIB`)? If the build sets `OVERLAY_TARGET_BUNDLE_ID`, does it match the game's bundle id? (default: no restriction) |
+| panel opens but Start is greyed out | no image loaded, or no ROI yet |
+| "no touches will be sent" in the log | Preview only is ON — that is the default |
+| log says *visual only* backend | the injector could not find an input view; taps will be shown, not sent |
+| log says layout drift | game updated → re-dump and `make layout DUMP=dump.cs`, then rebuild |
+| touches land on wrong buttons | re-confirm the ROI, or recalibrate `Resources/cpm_ui_anchors.json` + `make anchors` |
+| layer count stops early | `maxLayers` (panel) or the game's own cap; see `Layers: x / y` |
+| stutter | raise Settle delay (the editor animates; 15 ms is the floor, not a good default) |
+| `make check` prints `SKIP cpm_check` | install libclang bindings: `python3 -m pip install libclang` |
 
-### Emergency Stop
+## 10. Credits
 
-- **Long-press** anywhere on the overlay to trigger emergency stop
-- Or tap the red **Stop** button in the control panel
-
-### Calibrating UI Anchors
-
-The default `cpm_ui_anchors.json` provides baseline coordinates for iPhone 14 Pro (portrait). To calibrate for your device:
-
-1. Open CPM vinyl editor
-2. Note the screen positions of each UI element
-3. Edit `cpm_ui_anchors.json` with your coordinates
-4. Rebuild and reinject
-
-Or use the calibration save/load functions in `CPMUICalibration` to persist custom anchors to UserDefaults.
-
-## Technical Implementation
-
-### Shape Decomposition Pipeline
-
-```
-Input Image (ROI) → Grayscale → Sobel Edge Detection → Binary Threshold → 
-Contour Tracing → Douglas-Peucker Simplification → 
-Shape Classification → Primitive Decomposition → CPMVinylShape Output
-```
-
-### Touch Injection Flow
-
-```
-For each CPMVinylShape:
-  1. Tap "Add Shape" button
-  2. Select primitive type (if not square)
-  3. Drag move joystick to position
-  4. Adjust R/G/B sliders for color
-  5. Adjust scale slider
-  6. Adjust rotation slider
-  7. Tap "Confirm" button
-  → Next shape
-```
-
-Each step includes the configured touch delay (default 15ms) to allow CPM UI to process inputs.
-
-### Color Quantization
-
-Uses K-Means clustering (Accelerate framework) to reduce the image colors to a configurable palette (default 8 colors). Colors are sorted by luminance for consistency.
-
-For more detailed logos, Median Cut quantization is available as an alternative.
-
-### Memory Safety
-
-- High-resolution images are downscaled to max 2048px before processing
-- Pixel data is processed in the configured ROI only
-- ARC handles Objective-C object lifecycle
-- Core Graphics objects are properly released
-
-## Configuration
-
-### UserDefaults Keys (CPM-specific)
-
-| Key | Description |
-|-----|-------------|
-| `cpm_ui_anchors` | Serialized UI calibration data |
-| `cpm_autodraw_active` | Whether auto-draw is currently running |
-| `cpm_autodraw_paused` | Whether auto-draw is paused |
-| `cpm_layer_limit` | Maximum layer count |
-| `cpm_touch_delay_ms` | Delay between touch events (ms) |
-| `cpm_reference_image` | Saved reference image (legacy) |
-| `cpm_roi_rect` | Last used ROI rectangle |
-| `cpm_calibration_version` | Calibration version for compatibility |
-| `cpm_last_session_shapes` | Last session's shapes (debug) |
-| `cpm_emergency_stop` | Emergency stop state |
-
-### CPM Shape Primitive Types
-
-- `CPMShapeTypeSquare` - Rectangle/square
-- `CPMShapeTypeCircle` - Circle/ellipse
-- `CPMShapeTypeTriangle` - Triangle (or polygon with 3 vertices)
-- `CPMShapeTypeLine` - Line segment
-- `CPMShapeTypePolygon` - Custom polygon (with vertex array)
-
-## Limitations & Considerations
-
-### Touch Injection
-- IOHIDEvent-based injection requires jailbreak or special entitlements
-- On non-jailbroken devices, touch injection may not work as intended
-- Consider using companion app with CGEvent for non-jailbreak scenarios
-- Always test touch sequences on your specific device/CPU
-
-### Performance
-- Shape decomposition is CPU-intensive; large images take time
-- Progress callbacks allow UI to remain responsive
-- Background queue prevents UI freezing
-
-### Layer Limits
-- CPM typically supports up to 300 layers
-- Default max is 200 to stay safe
-- Configurable up to 300 for advanced users
-
-### Non-Destructive
-- This tool does NOT modify the CPM binary
-- All interactions are via touch emulation and overlay interfaces
-- Safe for use without worrying about game updates breaking things
-
-## Troubleshooting
-
-| Symptom | Fix |
-|---------|-----|
-| Build fails | Ensure Xcode iOS SDK is selected via `xcode-select` |
-| Overlay never appears | Check Console for `[OverlayTweak]` logs; verify dylib is injected |
-| Touches blocked | Enable lock mode, or check if overlay has focus |
-| Photo picker blank | Ensure PHPicker is presented on overlay window |
-| Stutter during automation | Increase touch delay (slider in control panel) |
-| Poor shape quality | Use higher resolution reference image; adjust color count and min shape area |
-| CPM not recognizing touches | Verify touch injection is working; check if JP requires jailbreak |
-| Wrong UI anchors | Recalibrate `cpm_ui_anchors.json` for your device screen size |
-
-## License
-
-Original OverlayTweak: MIT License
-CPM Automation Extension: MIT License
-
-## Credits
-
-- **OverlayTweak** base: StrongBomber
-- **CPM Image-to-Vinyl Automation**: Arena.ai Agent Mode
-- **IOKit/IOHID** touch injection concepts: Various jailbreak community resources
+Base overlay tweak by **StrongBomber**; the CPM automation extension, the `dump.cs`-driven
+layout pipeline and the static check harness were built with **Arena.ai Agent Mode**. Touch
+injection ideas follow public jailbreak-community write-ups of `IOHIDEventSystemClient`.
+Both parts are MIT-licensed.

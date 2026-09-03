@@ -10,7 +10,7 @@
 #import <PhotosUI/PhotosUI.h>
 #import <math.h>
 
-@interface SettingsViewController () <PHPickerViewControllerDelegate, UIGestureRecognizerDelegate>
+@interface SettingsViewController () <UIGestureRecognizerDelegate>
 @property (nonatomic, strong) UIScrollView *scrollView;
 @property (nonatomic, strong) UIView *contentView;
 @property (nonatomic, strong) UIVisualEffectView *blurView;
@@ -59,6 +59,61 @@
 - (void)refreshCropLabels;
 - (void)tick;
 @end
+
+@class CPMImagePickerToken;
+
+/**
+ * PHPicker needs a live delegate object, so every presentation owns a token that is kept
+ * alive until the picker returns. Both the settings rows and the auto-draw panel go
+ * through this, so there is exactly one image-loading path in the tweak.
+ */
+static NSMutableArray<CPMImagePickerToken *> *CPMPickerTokens = nil;
+
+@interface CPMImagePickerToken : NSObject <PHPickerViewControllerDelegate>
+@property (nonatomic, copy) void (^completion)(UIImage *_Nullable image);
+@end
+
+@implementation CPMImagePickerToken
+
++ (void)track:(CPMImagePickerToken *)token {
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{ CPMPickerTokens = [NSMutableArray array]; });
+    [CPMPickerTokens addObject:token];
+}
+
++ (void)untrack:(CPMImagePickerToken *)token {
+    [CPMPickerTokens removeObject:token];
+}
+
+- (void)finishWithImage:(UIImage *_Nullable)image {
+    void (^done)(UIImage *) = self.completion;
+    self.completion = nil;
+    [[self class] untrack:self];
+    if (done) done(image);
+}
+
+- (void)picker:(PHPickerViewController *)picker didFinishPicking:(NSArray<PHPickerResult *> *)results {
+    [picker dismissViewControllerAnimated:YES completion:^{
+        [[OverlayManager sharedManager] restoreKeyWindow];
+    }];
+    PHPickerResult *result = results.firstObject;
+    NSItemProvider *provider = result.itemProvider;
+    if (!provider || ![provider canLoadObjectOfClass:[UIImage class]]) {
+        [self finishWithImage:nil];
+        return;
+    }
+    __weak CPMImagePickerToken *weakSelf = self;
+    [provider loadObjectOfClass:[UIImage class] completionHandler:^(id<NSItemProviderReading> obj, NSError *error) {
+        UIImage *img = (UIImage *)obj;
+        if (!img) OLLog(@"Image picker load failed: %@", error.localizedDescription ?: @"unknown");
+        dispatch_async(dispatch_get_main_queue(), ^{
+            [weakSelf finishWithImage:img];
+        });
+    }];
+}
+
+@end
+
 
 @implementation SettingsViewController
 
@@ -700,13 +755,15 @@
 
 - (void)selectImageTapped {
     OLLog(@"Opening PHPicker");
-    PHPickerConfiguration *config = [[PHPickerConfiguration alloc] init];
-    config.filter = [PHPickerFilter imagesFilter];
-    config.selectionLimit = 1;
-    PHPickerViewController *picker = [[PHPickerViewController alloc] initWithConfiguration:config];
-    picker.delegate = self;
-    picker.modalPresentationStyle = UIModalPresentationFormSheet;
-    [[OverlayManager sharedManager] presentModal:picker];
+    __weak SettingsViewController *weakSelf = self;
+    [[self class] presentImagePickerWithCompletion:^(UIImage *_Nullable image) {
+        SettingsViewController *s = weakSelf;
+        if (!s || !image) return;
+        [[OverlayManager sharedManager] setOverlayImage:image];
+        s.imagePreview.image = image;
+        [s refreshSizeInfo];
+        [s tick];
+    }];
 }
 
 - (void)pasteTapped {
@@ -993,33 +1050,6 @@
     [self presentViewController:alert animated:YES completion:nil];
 }
 
-#pragma mark - PHPickerViewControllerDelegate
-
-- (void)picker:(PHPickerViewController *)picker didFinishPicking:(NSArray<PHPickerResult *> *)results {
-    [picker dismissViewControllerAnimated:YES completion:^{
-        [[OverlayManager sharedManager] restoreKeyWindow];
-    }];
-    PHPickerResult *result = results.firstObject;
-    if (!result) return;
-    NSItemProvider *provider = result.itemProvider;
-    if (![provider canLoadObjectOfClass:[UIImage class]]) return;
-    [provider loadObjectOfClass:[UIImage class] completionHandler:^(id<NSItemProviderReading> obj, NSError *error) {
-        UIImage *img = (UIImage *)obj;
-        if (!img) {
-            OLLog(@"PHPicker load failed: %@", error);
-            return;
-        }
-        dispatch_async(dispatch_get_main_queue(), ^{
-            [[OverlayManager sharedManager] setOverlayImage:img];
-            self.imagePreview.image = img;
-            [self refreshSizeInfo];
-            self.scaleSlider.value = (float)[[OverlayManager sharedManager] currentScale];
-            self.scaleValueLabel.text = [NSString stringWithFormat:@"%.1f×", [[OverlayManager sharedManager] currentScale]];
-            OLLog(@"Image selected.");
-        });
-    }];
-}
-
 #pragma mark - Alert
 
 - (void)showAlert:(NSString *)title msg:(NSString *)msg {
@@ -1028,5 +1058,24 @@
     [a addAction:[UIAlertAction actionWithTitle:@"Tamam" style:UIAlertActionStyleDefault handler:nil]];
     [self presentViewController:a animated:YES completion:nil];
 }
+
++ (void)presentImagePickerWithCompletion:(void (^)(UIImage *_Nullable))completion {
+    if (@available(iOS 14.0, *)) {
+        PHPickerConfiguration *config = [[PHPickerConfiguration alloc] init];
+        config.filter = [PHPickerFilter imagesFilter];
+        config.selectionLimit = 1;
+        PHPickerViewController *picker = [[PHPickerViewController alloc] initWithConfiguration:config];
+        CPMImagePickerToken *token = [[CPMImagePickerToken alloc] init];
+        token.completion = completion;
+        picker.delegate = token;
+        picker.modalPresentationStyle = UIModalPresentationFormSheet;
+        [CPMImagePickerToken track:token];
+        [[OverlayManager sharedManager] presentModal:picker];
+        return;
+    }
+    /* iOS 13 and older: the tweak's minimum is 14.0, so this is only a guard. */
+    if (completion) completion(nil);
+}
+
 
 @end
