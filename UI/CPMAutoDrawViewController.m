@@ -34,6 +34,10 @@ static const CGFloat kPanelRowHeight = 40.0;
 @property (nonatomic, strong) UISlider *touchDelaySlider;
 @property (nonatomic, strong) UILabel *touchDelayLabel;
 @property (nonatomic, strong) UISegmentedControl *mappingControl;
+@property (nonatomic, strong) UILabel *calInfoLabel;
+@property (nonatomic, strong) UISegmentedControl *calStepControl;
+@property (nonatomic, assign) NSInteger calTargetIndex;
+@property (nonatomic, assign) CGFloat calStep;
 @property (nonatomic, strong) UISwitch *previewOnlySwitch;
 @property (nonatomic, strong) UISwitch *autoSaveSwitch;
 @property (nonatomic, strong) UIView *regionRow;
@@ -74,6 +78,8 @@ static const CGFloat kPanelRowHeight = 40.0;
     [super viewWillAppear:animated];
     [self restorePersistedControls];
     [self adoptWindowGeometry];
+    self.calStep = 4.0;
+    [self refreshCalibrationRow];
     [self refreshDiagnostics];
     [self syncFromController];
 }
@@ -194,6 +200,58 @@ static const CGFloat kPanelRowHeight = 40.0;
     self.mappingControl.selectedSegmentIndex = (NSInteger)self.calibration.mappingMode;
     [self.mappingControl addTarget:self action:@selector(mappingChanged:) forControlEvents:UIControlEventValueChanged];
     [self placeRow:self.mappingControl height:28];
+
+    /* ---- on-device anchor calibration -------------------------------------
+     * The compiled-in table was measured on one phone. On another device/aspect the
+     * buttons are in roughly the right place but not exactly, and no amount of mapping
+     * cleverness fixes a coordinate that was never measured here. These rows let the user
+     * walk each anchor onto its real widget and try it, with everything saved immediately.
+     */
+    [self placeRow:[self labelWithText:@"Düğme kalibrasyonu — oklarla gerçek butona kaydır"
+                                  font:[UIFont systemFontOfSize:12 weight:UIFontWeightSemibold]
+                                 color:[UIColor colorWithWhite:0.85 alpha:1]
+                                height:16] height:16];
+
+    self.calInfoLabel = [self labelWithText:@"…"
+                                       font:[UIFont monospacedDigitSystemFontOfSize:11 weight:UIFontWeightRegular]
+                                      color:[UIColor colorWithWhite:0.75 alpha:1]
+                                     height:30];
+    self.calInfoLabel.numberOfLines = 2;
+    [self placeRow:self.calInfoLabel height:30];
+
+    UIView *pickRow = [[UIView alloc] initWithFrame:CGRectMake(0, 0, self.contentWidth, kPanelRowHeight)];
+    UIButton *prev = [self buttonWithTitle:@"◀" action:@selector(calPrevTapped)];
+    prev.frame = CGRectMake(0, 0, 44, kPanelRowHeight);
+    [pickRow addSubview:prev];
+    UIButton *next = [self buttonWithTitle:@"▶" action:@selector(calNextTapped)];
+    next.frame = CGRectMake(self.contentWidth - 44, 0, 44, kPanelRowHeight);
+    [pickRow addSubview:next];
+    self.calStepControl = [[UISegmentedControl alloc] initWithItems:@[@"1 px", @"4 px", @"16 px"]];
+    self.calStepControl.frame = CGRectMake(52, 4, self.contentWidth - 104, kPanelRowHeight - 8);
+    self.calStepControl.selectedSegmentIndex = 1;
+    [self.calStepControl addTarget:self action:@selector(calStepChanged:) forControlEvents:UIControlEventValueChanged];
+    [pickRow addSubview:self.calStepControl];
+    [self placeView:pickRow];
+
+    UIView *nudgeRow = [[UIView alloc] initWithFrame:CGRectMake(0, 0, self.contentWidth, kPanelRowHeight)];
+    CGFloat quarter = (self.contentWidth - 18) / 4.0;
+    NSArray *arrows = @[ @"←", @"↑", @"↓", @"►" ];
+    for (NSUInteger i = 0; i < arrows.count; i++) {
+        UIButton *b = [self buttonWithTitle:arrows[i] action:@selector(calNudgeTapped:)];
+        b.tag = 700 + (NSInteger)i;
+        b.frame = CGRectMake(i * (quarter + 6), 0, quarter, kPanelRowHeight);
+        [nudgeRow addSubview:b];
+    }
+    [self placeView:nudgeRow];
+
+    UIView *calActRow = [[UIView alloc] initWithFrame:CGRectMake(0, 0, self.contentWidth, kPanelRowHeight)];
+    UIButton *testBtn = [self buttonWithTitle:@"Seçili yere dokun" action:@selector(calTestTapped)];
+    testBtn.frame = CGRectMake(0, 0, (self.contentWidth - 8) * 0.62, kPanelRowHeight);
+    [calActRow addSubview:testBtn];
+    UIButton *resetBtn = [self buttonWithTitle:@"Tabloya dön" action:@selector(calResetTapped)];
+    resetBtn.frame = CGRectMake((self.contentWidth - 8) * 0.62 + 8, 0, (self.contentWidth - 8) * 0.38, kPanelRowHeight);
+    [calActRow addSubview:resetBtn];
+    [self placeView:calActRow];
 
     /* run controls */
     UIView *runRow = [[UIView alloc] initWithFrame:CGRectZero];
@@ -504,12 +562,92 @@ static const CGFloat kPanelRowHeight = 40.0;
     [self appendLogLine:[NSString stringWithFormat:@"mapping → %@ (kaydedildi)", modeName]];
     /* Positions shift with the mode, so anything computed against the old one is stale. */
     self.previewShapes = nil;
+    [self refreshCalibrationRow];
     [self refreshDiagnostics];
 }
 
 - (void)autoSaveChanged:(UISwitch *)sender {
     self.executionController.autoSaveVinyl = sender.isOn;
     [[NSUserDefaults standardUserDefaults] setBool:sender.isOn forKey:kCPMDefaultsAutoSave];
+}
+
+#pragma mark anchor calibration
+
+- (CPMUIElementType)calTargetType {
+    NSInteger count = (NSInteger)CPMUIElementTypeCount;
+    NSInteger idx = ((self.calTargetIndex % count) + count) % count;
+    return (CPMUIElementType)idx;
+}
+
+- (void)calPrevTapped { self.calTargetIndex -= 1; [self refreshCalibrationRow]; }
+- (void)calNextTapped { self.calTargetIndex += 1; [self refreshCalibrationRow]; }
+
+- (void)calStepChanged:(UISegmentedControl *)sender {
+    self.calStep = sender.selectedSegmentIndex == 0 ? 1.0 : (sender.selectedSegmentIndex == 2 ? 16.0 : 4.0);
+    [self refreshCalibrationRow];
+}
+
+- (void)calNudgeTapped:(UIButton *)sender {
+    CGPoint delta = CGPointZero;
+    switch (sender.tag - 700) {
+        case 0: delta = CGPointMake(-self.calStep, 0); break;
+        case 1: delta = CGPointMake(0, -self.calStep); break;
+        case 2: delta = CGPointMake(0, self.calStep); break;
+        default: delta = CGPointMake(self.calStep, 0); break;
+    }
+    CPMUICalibration *cal = self.calibration;
+    [cal shiftAnchorForType:[self calTargetType] by:delta];
+    /* A hand-placed anchor is a verified anchor; keep it that way across launches. */
+    cal.userVerified = YES;
+    [cal saveToUserDefaults];
+    self.previewShapes = nil;
+    [self refreshCalibrationRow];
+}
+
+- (void)calTestTapped {
+    if (self.previewMode) {
+        [self appendLogLine:@"test dokunuşu için 'Sadece önizleme' kapalı olmalı"];
+        return;
+    }
+    CPMUICalibration *cal = self.calibration;
+    CPMUIElementAnchor *a = [cal anchorForType:[self calTargetType]];
+    if (!a) return;
+    CGPoint centre = CGPointMake(CGRectGetMidX(a.referenceFrame), CGRectGetMidY(a.referenceFrame));
+    CGPoint onScreen = [cal screenPointForReferencePoint:centre];
+    [[CPMTouchInjector sharedInjector] synthesizeTapAt:onScreen];
+    [self appendLogLine:[NSString stringWithFormat:@"test: %@ → ekran (%0.0f, %0.0f)",
+                         CPMUIElementTypeName(a.elementType), onScreen.x, onScreen.y]];
+}
+
+- (void)calResetTapped {
+    CPMUIElementAnchor *fresh = [[CPMUICalibration defaultCalibration] anchorForType:[self calTargetType]];
+    CPMUIElementType type = [self calTargetType];
+    if (!fresh) { [self appendLogLine:@"tablo okunamadı"]; return; }
+    CGPoint centre = fresh.center;
+    CGSize size = fresh.size;
+    CPMUIElementAnchor *restored = [[CPMUIElementAnchor alloc] initWithType:type center:centre size:size];
+    restored.sliderMinX = fresh.sliderMinX; restored.sliderMaxX = fresh.sliderMaxX;
+    restored.sliderMinY = fresh.sliderMinY; restored.sliderMaxY = fresh.sliderMaxY;
+    restored.inverted = fresh.inverted;
+    restored.displayName = fresh.displayName;
+    [self.calibration setAnchor:restored forType:type];
+    [self.calibration saveToUserDefaults];
+    [self appendLogLine:@"anchor tablodayki yerine döndü"];
+    [self refreshCalibrationRow];
+}
+
+- (void)refreshCalibrationRow {
+    CPMUICalibration *cal = self.calibration;
+    CPMUIElementType type = [self calTargetType];
+    CPMUIElementAnchor *a = [cal anchorForType:type];
+    if (!a) { self.calInfoLabel.text = @"anchor yok"; return; }
+    CGPoint centre = [cal screenPointForReferencePoint:CGPointMake(CGRectGetMidX(a.referenceFrame),
+                                                                    CGRectGetMidY(a.referenceFrame))];
+    NSString *name = a.displayName.length ? a.displayName : CPMUIElementTypeName(type);
+    self.calInfoLabel.text = [NSString stringWithFormat:
+        @"%ld/%ld · %@\nref (%0.0f, %0.0f) → ekran (%0.0f, %0.0f) · adım %0.0f px",
+        (long)type + 1, (long)CPMUIElementTypeCount, name,
+        a.center.x, a.center.y, centre.x, centre.y, self.calStep ?: 4.0];
 }
 
 #pragma mark persisted controls

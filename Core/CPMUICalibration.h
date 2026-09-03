@@ -43,6 +43,11 @@ FOUNDATION_EXPORT NSString *CPMUIElementTypeName(CPMUIElementType type);
 
 @interface CPMUIElementAnchor : NSObject <NSCopying>
 
+/// Builds an anchor from reference-space geometry. Public because `setAnchor:forType:` is how a
+/// hand-calibrated profile gets written back, and that needs a way to construct one.
+- (instancetype)initWithType:(CPMUIElementType)type center:(CGPoint)center size:(CGSize)size;
+- (instancetype)init;
+
 @property (nonatomic, assign) CPMUIElementType elementType;
 /// All geometry below is in *reference* points, origin top-left, y down.
 @property (nonatomic, assign) CGPoint center;
