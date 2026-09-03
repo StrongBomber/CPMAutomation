@@ -291,6 +291,8 @@ static NSString *const kCPMCalibrationIDKey = @"cpm_ui_calibration_id";
     if (!changed) return NO;
     _screenSize = size;
     [self rebuildDerivedValues];
+    /* A derived canvas belongs to the old screen size; a measured one is the user's. */
+    if (!_userVerified) [self deriveDefaultCanvasRect];
     return YES;
 }
 
@@ -348,8 +350,13 @@ static NSString *const kCPMCalibrationIDKey = @"cpm_ui_calibration_id";
             if (a) cal.anchorsByType[@((NSInteger)a.elementType)] = a;
         }
     }
+    NSNumber *verifiedForCanvas = json[@"userVerified"];
     NSArray *canvas = json[@"canvasRect"];
-    if ([canvas isKindOfClass:NSArray.class] && canvas.count == 4) {
+    /* Only a measured paint area survives a restore. The default canvas is derived from the
+     * screen size, so a copy saved on another device (or before the screen geometry was read
+     * from the window) is a wrong number, not a preference. */
+    if ([canvas isKindOfClass:NSArray.class] && canvas.count == 4
+        && (![verifiedForCanvas isKindOfClass:NSNumber.class] || verifiedForCanvas.boolValue)) {
         cal.canvasRect = CGRectMake([canvas[0] doubleValue], [canvas[1] doubleValue],
                                     [canvas[2] doubleValue], [canvas[3] doubleValue]);
     }
