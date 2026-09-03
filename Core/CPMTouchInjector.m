@@ -527,6 +527,10 @@ static BOOL CPMClassLooksLikeUnityInput(Class cls) {
         }
     };
     if (events.count == 0) { scheduleEnd(); return; }
+    /* A real finger on screen drops the *rest of the batch*: shifting only some events would
+     * deliver them out of order (Ended before Began = a stuck finger), which is far worse for
+     * the game's NGUI drag state than a layer that simply did not get its tap. */
+    __block BOOL stopped = NO;
     NSTimeInterval last = 0;
     for (CPMTouchEvent *e in events) {
         NSTimeInterval offset = (e.timestamp - base) + self.eventDelayMs / 1000.0;
@@ -534,13 +538,11 @@ static BOOL CPMClassLooksLikeUnityInput(Class cls) {
         dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(MAX(0, offset) * NSEC_PER_SEC)),
                        dispatch_get_main_queue(), ^{
             if (myGen != self.generation || self.emergencyStopActive) return;
-            if (self.userTouchActive) {           // never fight a real finger
-                dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.05 * NSEC_PER_SEC)),
-                               dispatch_get_main_queue(), ^{
-                    if (myGen != self.generation || self.emergencyStopActive) return;
-                    any = YES;
-                    [self deliverEvent:e];
-                });
+            if (stopped) return;
+            if (self.userTouchActive) {
+                stopped = YES;
+                CPM_LOG(@"user finger detected — dropping the rest of this %lu-event batch",
+                        (unsigned long)events.count);
                 return;
             }
             any = YES;

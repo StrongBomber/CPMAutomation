@@ -218,14 +218,20 @@ scripts/check_objc.py             repo-hygiene rules the CI enforces
   decomposition prefers large regions and a small palette. Detailed logos are better drawn with
   `configForDetailedLogoWithMaxLayers:` and accepted as an approximation.
 * **Calibration is device/orientation specific.** The anchors are measured in CPM's landscape
-  vinyl editor; a rotated or resized editor needs a fresh ROI (or edited JSON + `make anchors`).
+  vinyl editor (`844 × 390 pt`). At runtime the profile is re-aimed at the *game window*, not at
+  `UIScreen.mainScreen.bounds` — which never rotates on iPhone and used to make every tap land on
+  the wrong axis. If the window's orientation differs from the table, the table is re-derived
+  rotated 90° (verified round-trip), the derived canvas follows it, and the paint area must be
+  confirmed again. Edited coordinates still belong in `Resources/cpm_ui_anchors.json` + `make anchors`.
 
 ## 9. Troubleshooting
 
 | Symptom | Check |
 |---------|-------|
 | overlay never appears | Console for `[OverlayTweak]` / `[CPM-Automation]` logs; is the dylib load command present (`LC_LOAD_DYLIB`)? If the build sets `OVERLAY_TARGET_BUNDLE_ID`, does it match the game's bundle id? (default: no restriction) |
-| panel opens but Start is greyed out | no image loaded, or no ROI yet |
+| **BAŞLAT does nothing** | the status line now says why (`Başlatılamadı: …`). Usual causes: no image; calibration not usable for this screen (the panel re-derives it from the window — reopen the panel after rotating); a preview is still running (use the cached plan by waiting, or the button is disabled during preview); the game reports no free layers. |
+| ran, progress bar moved, nothing in game | **Önizleme** (preview only) is ON — the button turns grey and reads `ÖNİZLE`, and a toast says `Önizleme sürüyor`. Also check the `Dokunma:` line: `visual only` means nothing can be delivered. |
+| panel opens but Start is greyed out | a run is already in progress (or the preview is computing) |
 | "no touches will be sent" in the log | Preview only is ON — that is the default |
 | log says *visual only* backend | the injector could not find an input view; taps will be shown, not sent |
 | log says layout drift | game updated → re-dump and `make layout DUMP=dump.cs`, then rebuild |

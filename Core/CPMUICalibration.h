@@ -83,8 +83,19 @@ FOUNDATION_EXPORT NSString *CPMUIElementTypeName(CPMUIElementType type);
 @property (nonatomic, assign) CGRect canvasRect;
 /// YES once the user has dragged the canvas / anchors themselves.
 @property (nonatomic, assign) BOOL userVerified;
-/// NO when the profile's orientation does not match the screen: taps would be meaningless.
+/// NO only when the profile genuinely cannot describe this screen (no anchors, or a
+/// rotated table that was never re-derived). Orientation alone is not a veto: the profile
+/// can be rotated onto a portrait window with -refreshForWindowSize:.
 @property (nonatomic, readonly) BOOL isUsableForCurrentScreen;
+/// YES when the compiled-in (landscape) table was rotated to describe a portrait screen.
+@property (nonatomic, readonly) BOOL referenceSpaceRotated;
+
+/// Re-aim the profile at the window the game actually draws into — `size` in points, i.e.
+/// the overlay window's bounds, *not* [UIScreen mainScreen].bounds (which never rotates).
+/// Flips the reference space when the orientation differs; in that case the previously
+/// measured canvas is meaningless and is dropped, so the ROI has to be re-confirmed.
+/// Returns YES when anything changed.
+- (BOOL)refreshForWindowSize:(CGSize)size;
 
 /// The compiled-in table (CPMAnchorsDefault.h) scaled to `screenSize`.
 + (instancetype)defaultCalibration;

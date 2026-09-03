@@ -37,6 +37,10 @@ static const CGFloat kPanelRowHeight = 40.0;
 @property (nonatomic, strong) UISwitch *autoSaveSwitch;
 @property (nonatomic, strong) UIView *regionRow;
 @property (nonatomic, strong) UIButton *startBtn;
+/// Shapes from the last successful preview; BAŞLAT reuses them instead of re-running the
+/// (single-flight) decomposer, so "preview then start" cannot collide or stall.
+@property (nonatomic, copy, nullable) NSArray<CPMVinylShape *> *previewShapes;
+@property (nonatomic, assign) CGSize previewImageSize;
 @property (nonatomic, strong) UIButton *pauseBtn;
 @property (nonatomic, strong) UIButton *stopBtn;
 @property (nonatomic, strong) UIButton *emergencyBtn;
@@ -68,6 +72,7 @@ static const CGFloat kPanelRowHeight = 40.0;
 - (void)viewWillAppear:(BOOL)animated {
     [super viewWillAppear:animated];
     [self restorePersistedControls];
+    [self adoptWindowGeometry];
     [self refreshDiagnostics];
     [self syncFromController];
 }
@@ -204,8 +209,8 @@ static const CGFloat kPanelRowHeight = 40.0;
                                       font:[UIFont systemFontOfSize:13 weight:UIFontWeightSemibold]
                                        color:[UIColor whiteColor]
                                       height:34];
-    self.statusLabel.numberOfLines = 2;
-    [self placeRow:self.statusLabel height:34];
+    self.statusLabel.numberOfLines = 3;
+    [self placeRow:self.statusLabel height:46];
 
     self.layerCountLabel = [self labelWithText:@"Katman: 0 / 0"
                                            font:[UIFont monospacedDigitSystemFontOfSize:12 weight:UIFontWeightRegular]
@@ -304,10 +309,19 @@ static const CGFloat kPanelRowHeight = 40.0;
     }
 }
 
+/* A dry run must not look like a real run: same button, different colour, and the reason
+ * one tap away in the log. */
+- (void)refreshStartButtonForMode {
+    self.startBtn.backgroundColor = _previewMode ? [UIColor colorWithWhite:0.45 alpha:1]
+                                                 : [UIColor systemGreenColor];
+    [self.startBtn setTitle:_previewMode ? @"ÖNİZLE" : @"BAŞLAT" forState:UIControlStateNormal];
+}
+
 - (void)setPreviewMode:(BOOL)previewMode {
     _previewMode = previewMode;
     self.executionController.dryRun = previewMode;
     self.previewOnlySwitch.on = previewMode;
+    [self refreshStartButtonForMode];
 }
 
 #pragma mark actions
@@ -357,20 +371,28 @@ static const CGFloat kPanelRowHeight = 40.0;
 
 - (void)previewTapped {
     if (!self.referenceImage) { [self loadImageTapped]; return; }
+    [self adoptWindowGeometry];
     CPMShapeDecomposer *decomposer = [CPMShapeDecomposer sharedDecomposer];
     NSInteger cap = self.executionController.maxLayers;
     CPMShapeDecompositionConfig *cfg = [CPMShapeDecompositionConfig configForDetailedLogoWithMaxLayers:cap];
     cfg.roiRect = self.roiRect;
     __weak CPMAutoDrawViewController *weakSelf = self;
     self.statusLabel.text = @"Önizleme için ayrıştırılıyor…";
+    self.startBtn.enabled = NO;
     [decomposer decomposeImage:self.referenceImage withConfig:cfg
                     completion:^(CPMShapeDecompositionResult *result, NSError *error) {
         CPMAutoDrawViewController *s = weakSelf;
         if (!s) return;
+        s.startBtn.enabled = !s.executionController.isRunning;
         if (error || !result) {
-            s.statusLabel.text = error.localizedDescription ?: @"preview failed";
+            s.statusLabel.text = [NSString stringWithFormat:@"Önizleme başarısız: %@",
+                                  error.localizedDescription ?: @"bilinmeyen hata"];
+            s.statusLabel.textColor = [UIColor systemOrangeColor];
+            s.previewShapes = nil;
             return;
         }
+        s.previewShapes = result.shapes;
+        s.previewImageSize = result.workingSize;
         s.statusLabel.text = result.summaryString;
         [s appendLogLine:result.summaryString];
         for (NSString *w in result.warnings) [s appendLogLine:[@"note: " stringByAppendingString:w]];
@@ -388,9 +410,31 @@ static const CGFloat kPanelRowHeight = 40.0;
         [self loadImageTapped];
         return;
     }
+    [self adoptWindowGeometry];
     self.executionController.calibration = self.calibration;
+    self.executionController.referenceImage = self.referenceImage;
     self.executionController.dryRun = self.previewMode;
-    [self.executionController startAutomationWithImage:self.referenceImage roiRect:self.roiRect];
+    CPMTouchInjector *injector = [CPMTouchInjector sharedInjector];
+    if (!self.previewMode && !injector.canInjectTouches) {
+        /* The controller will quietly downgrade to a dry run; say so before it happens, because
+         * "it ran but nothing moved" is otherwise indistinguishable from a broken automation. */
+        self.statusLabel.text = [NSString stringWithFormat:@"Uyarı: dokunuş iletilemiyor (%@) — önizleme olarak çalışacak",
+                                 injector.backendDescription ?: @"bilinmeyen backend"];
+        self.statusLabel.textColor = [UIColor systemOrangeColor];
+        [self appendLogLine:self.statusLabel.text];
+    }
+    if (self.previewShapes.count > 0) {
+        [self appendLogLine:[NSString stringWithFormat:@"reusing the preview plan (%lu stickers)",
+                             (unsigned long)self.previewShapes.count]];
+        [self.executionController startWithPlan:self.previewShapes imageSize:self.previewImageSize];
+    } else {
+        [self.executionController startAutomationWithImage:self.referenceImage roiRect:self.roiRect];
+    }
+    if (!self.executionController.isRunning) {
+        /* The controller reported why through didEncounterError: — do not leave the user
+         * staring at an idle button. */
+        [self appendLogLine:@"start refused — the reason is shown above"];
+    }
     if ([self.delegate respondsToSelector:@selector(autoDrawControllerDidRequestStart:)]) {
         [self.delegate autoDrawControllerDidRequestStart:self];
     }
@@ -419,6 +463,7 @@ static const CGFloat kPanelRowHeight = 40.0;
 }
 
 - (void)layerLimitChanged:(UISlider *)slider {
+    self.previewShapes = nil;   /* the budget decides which shapes survive */
     NSInteger limit = (NSInteger)(slider.value + 0.5f);
     self.executionController.maxLayers = limit;
     self.layerLimitLabel.text = [NSString stringWithFormat:@"Katman sınırı: %ld%@", (long)limit,
@@ -468,6 +513,7 @@ static const CGFloat kPanelRowHeight = 40.0;
 - (void)loadReferenceImage:(UIImage *)image {
     self.referenceImage = image;
     self.thumbnail.image = image;
+    self.previewShapes = nil;
     self.statusLabel.text = image ? [NSString stringWithFormat:@"Görsel %0.0f×%0.0f pt — önizle ya da başlat",
                                      image.size.width, image.size.height] : @"Hazır.";
     [self appendLogLine:image ? @"image loaded" : @"image cleared"];
@@ -475,6 +521,7 @@ static const CGFloat kPanelRowHeight = 40.0;
 
 - (void)clearReferenceImage {
     self.referenceImage = nil;
+    self.previewShapes = nil;
     self.thumbnail.image = nil;
     self.roiRect = CGRectNull;
     self.layerCountLabel.text = @"Katman: 0 / 0";
@@ -483,6 +530,7 @@ static const CGFloat kPanelRowHeight = 40.0;
 
 - (void)updateROI:(CGRect)rect {
     self.roiRect = CGRectStandardize(rect);
+    self.previewShapes = nil;
     [self appendLogLine:[NSString stringWithFormat:@"image ROI set to %@ — re-run the preview",
                          NSStringFromCGRect(self.roiRect)]];
 }
@@ -502,6 +550,27 @@ static const CGFloat kPanelRowHeight = 40.0;
     self.doneRegionBtn.hidden = YES;
     self.cancelRegionBtn.hidden = YES;
     [self appendLogLine:@"region selection cancelled"];
+}
+
+#pragma mark window geometry
+
+/*
+ * UIScreen.mainScreen.bounds does not rotate, so a profile built at launch (or restored from
+ * an earlier session) can describe portrait while the game sits in landscape — or the reverse
+ * after a rotation. Everything downstream (anchor taps, slider drags, the canvas rect) is
+ * computed from that profile, so the panel re-aims it at the window it is actually living in
+ * before it starts or previews. Cheap and idempotent: no change, no work.
+ */
+- (void)adoptWindowGeometry {
+    UIView *host = self.view.window ?: self.view;
+    CGSize size = host.bounds.size;
+    if (size.width < 1 || size.height < 1) return;
+    if ([self.calibration refreshForWindowSize:size]) {
+        self.roiRect = CGRectNull;
+        [self appendLogLine:[NSString stringWithFormat:
+            @"geometry re-derived for %.0fx%.0f pt — re-confirm the paint area",
+            size.width, size.height]];
+    }
 }
 
 #pragma mark header API
@@ -562,6 +631,8 @@ static const CGFloat kPanelRowHeight = 40.0;
 
 - (void)controller:(id)controller didChangeState:(CPMAutomationStep)state {
     self.statusLabel.text = [self statusText];
+    self.statusLabel.textColor = state == CPMAutomationStepFailed ? [UIColor systemOrangeColor]
+                                                                  : [UIColor whiteColor];
     NSString *title = state == CPMAutomationStepPaused ? @"Devam" : @"Duraklat";
     [self.pauseBtn setTitle:title forState:UIControlStateNormal];
     BOOL running = state == CPMAutomationStepPlacingLayers || state == CPMAutomationStepDecomposingImage ||
@@ -589,7 +660,9 @@ static const CGFloat kPanelRowHeight = 40.0;
 }
 
 - (void)controller:(id)controller didEncounterError:(NSError *)error {
-    self.statusLabel.text = error.localizedDescription ?: @"failed";
+    self.statusLabel.text = [NSString stringWithFormat:@"Başlatılamadı: %@",
+                             error.localizedDescription ?: @"bilinmeyen hata"];
+    self.statusLabel.textColor = [UIColor systemOrangeColor];
     [self appendLogLine:[NSString stringWithFormat:@"error: %@", error.localizedDescription ?: @"?"]];
 }
 

@@ -221,6 +221,9 @@ static NSErrorDomain const CPMExecutionControllerErrorDomain = @"CPMExecutionCon
         [self log:[NSString stringWithFormat:@"touch injection unavailable (%@) — running as a preview",
                    self.injector.backendDescription]];
         self.dryRun = YES;
+        /* A run that injects nothing is not a failure of the plan, but it is definitely not a
+         * run either — report it instead of letting the progress bar lie. */
+        [self notifyProgress];
     }
 
     NSInteger cap = [self effectiveLayerCap];
@@ -626,8 +629,27 @@ static NSErrorDomain const CPMExecutionControllerErrorDomain = @"CPMExecutionCon
                 run(i + 1);
             });
         };
-        if (step.body) step.body(done);
-        else done();
+        /* Watchdog: a step body that forgets to call done() used to freeze the whole run in
+         * silence (the panel just stops moving). Ten seconds is longer than any legitimate
+         * settle delay plus a touch, and shorter than "the user gave up". */
+        __block BOOL settled = NO;
+        void (^finish)(void) = ^{
+            if (settled) return;
+            settled = YES;
+            done();
+        };
+        NSTimeInterval timeout = MAX(4.0, 2.0 + (MAX(0.0, s.touchDelayMs / 1000.0) * 4.0));
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(timeout * NSEC_PER_SEC)),
+                       dispatch_get_main_queue(), ^{
+            if (settled) return;
+            settled = YES;
+            [s log:[NSString stringWithFormat:@"step timed out after %0.0fs: %@ — moving on",
+                        timeout, step.label]];
+            if (i >= steps.count) { if (completion) completion(); return; }
+            run(i + 1);
+        });
+        if (step.body) step.body(finish);
+        else finish();
     };
     dispatch_async(dispatch_get_main_queue(), ^{ run(0); });
 }

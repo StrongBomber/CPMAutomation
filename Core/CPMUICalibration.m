@@ -153,6 +153,8 @@ static BOOL CPMUITypeIsSlider(CPMUIElementType type) {
 
 @interface CPMUICalibration ()
 - (void)rebuildDerivedValues;
+- (void)loadCompiledAnchorsForLandscape:(BOOL)wantLandscape;
+- (void)deriveDefaultCanvasRect;
 - (CGRect)effectiveCanvasRect;
 - (NSString *)_calibrationId_safe;
 @property (nonatomic, copy, readwrite) NSString *calibrationID;
@@ -160,6 +162,7 @@ static BOOL CPMUITypeIsSlider(CPMUIElementType type) {
 @property (nonatomic, assign, readwrite) CGSize screenSize;
 @property (nonatomic, assign, readwrite) CGFloat scaleFactor;
 @property (nonatomic, assign, readwrite) BOOL isLandscape;
+@property (nonatomic, assign, readwrite) BOOL referenceSpaceRotated;
 @property (nonatomic, copy, readwrite) NSArray<CPMUIElementAnchor *> *anchors;
 @property (nonatomic, strong) NSMutableDictionary<NSNumber *, CPMUIElementAnchor *> *anchorsByType;
 @end
@@ -170,6 +173,21 @@ static NSString *const kCPMCalibrationDefaultsKey = @"cpm_ui_calibration_json";
 static NSString *const kCPMCalibrationIDKey = @"cpm_ui_calibration_id";
 
 + (CGSize)currentScreenSize {
+    /* UIScreen.mainScreen.bounds never rotates: on an iPhone it keeps reporting the
+     * portrait frame even while a landscape game owns the screen. The window scene's
+     * coordinate space is the number that actually describes what the user sees. */
+    if (@available(iOS 13.0, *)) {
+        for (UIScene *scene in UIApplication.sharedApplication.connectedScenes) {
+            if (![scene isKindOfClass:UIWindowScene.class]) continue;
+            UIWindowScene *ws = (UIWindowScene *)scene;
+            if (ws.activationState != UISceneActivationStateForegroundActive) continue;
+            CGSize size = ws.coordinateSpace.bounds.size;
+            if (size.width > 1 && size.height > 1) return size;
+        }
+    }
+    UIWindow *window = UIApplication.sharedApplication.keyWindow;
+    CGSize size = window.bounds.size;
+    if (size.width > 1 && size.height > 1) return size;
     return UIScreen.mainScreen.bounds.size;
 }
 
@@ -178,21 +196,95 @@ static NSString *const kCPMCalibrationIDKey = @"cpm_ui_calibration_id";
     if (self) {
         _anchorsByType = [NSMutableDictionary dictionary];
         _screenSize = [self.class currentScreenSize];
-        _referenceScreenSize = CGSizeMake(CPM_ANCHOR_REFERENCE_WIDTH, CPM_ANCHOR_REFERENCE_HEIGHT);
-        _isLandscape = CPM_ANCHOR_IS_LANDSCAPE != 0;
         _calibrationID = CPM_ANCHOR_CALIBRATION_ID;
-#if CPM_ANCHOR_HAS_CANVAS_RECT
-        CGFloat refW = _referenceScreenSize.width, refH = _referenceScreenSize.height;
-        CGSize screen = _screenSize;
-        CGRect ref = CPM_ANCHOR_CANVAS_RECT;
-        _canvasRect = CGRectMake(ref.origin.x * (screen.width / refW), ref.origin.y * (screen.height / refH),
-                                 ref.size.width * (screen.width / refW), ref.size.height * (screen.height / refH));
-#else
-        _canvasRect = CGRectNull;
-#endif
+        [self loadCompiledAnchorsForLandscape:(_screenSize.width > _screenSize.height)];
         [self rebuildDerivedValues];
     }
     return self;
+}
+
+/* The compiled-in table is measured on the game's landscape editor. Rotating the phone does
+ * not rotate CPM's editor, so the only honest thing to do when the window's orientation
+ * differs from the table's is to re-derive the reference space from the table (a 90° rotation
+ * of every rect) — never to stretch a landscape layout over a portrait screen.
+ *
+ * Re-deriving (instead of mutating) keeps the operation idempotent: rotate twice and you are
+ * back at the table, not at a 180° version of it. */
+- (void)loadCompiledAnchorsForLandscape:(BOOL)wantLandscape {
+    BOOL tableLandscape = CPM_ANCHOR_IS_LANDSCAPE != 0;
+    BOOL rotate = (wantLandscape != tableLandscape);
+    CGFloat refW = CPM_ANCHOR_REFERENCE_WIDTH, refH = CPM_ANCHOR_REFERENCE_HEIGHT;
+    _referenceScreenSize = rotate ? CGSizeMake(refH, refW) : CGSizeMake(refW, refH);
+    _isLandscape = wantLandscape;
+    _referenceSpaceRotated = rotate;
+    [_anchorsByType removeAllObjects];
+    for (NSUInteger i = 0; i < CPM_ANCHOR_RECORD_COUNT; i++) {
+        const CPMUIAnchorRecord *r = &CPMUIAnchorRecords[i];
+        CGRect f = CGRectMake(r->centerX - r->width * 0.5, r->centerY - r->height * 0.5,
+                              r->width, r->height);
+        CGPoint lo = CGPointMake(r->sliderMinX, r->sliderMinY);
+        CGPoint hi = CGPointMake(r->sliderMaxX, r->sliderMaxY);
+        if (rotate) {
+            /* (x, y) in a W×H landscape box -> (H - maxY, x) in the H×W portrait box. */
+            CGRect t = CGRectMake(refH - CGRectGetMaxY(f), CGRectGetMinX(f), f.size.height, f.size.width);
+            f = t;
+            lo = CGPointMake(refH - lo.y, lo.x);
+            hi = CGPointMake(refH - hi.y, hi.x);
+        }
+        CPMUIElementAnchor *a = [[CPMUIElementAnchor alloc] initWithType:(CPMUIElementType)r->type
+                                                                  center:CGPointMake(CGRectGetMidX(f), CGRectGetMidY(f))
+                                                                    size:f.size];
+        a.sliderMinX = lo.x; a.sliderMaxX = hi.x;
+        a.sliderMinY = lo.y; a.sliderMaxY = hi.y;
+        a.displayName = [NSString stringWithUTF8String:r->name];
+        a.isValid = r->isValid;
+        _anchorsByType[@(r->type)] = a;
+    }
+    [self deriveDefaultCanvasRect];
+}
+
+/* The painted surface, in reference space, mapped onto the current screen. Derived from the
+ * same table as the anchors so a rotated profile still gets a sane starting canvas — the user
+ * confirming the paint area only ever has to *adjust* it. */
+- (void)deriveDefaultCanvasRect {
+#if CPM_ANCHOR_HAS_CANVAS_RECT
+    CGRect ref = CPM_ANCHOR_CANVAS_RECT;
+    if (_referenceSpaceRotated) {
+        CGFloat tableH = CPM_ANCHOR_REFERENCE_HEIGHT;
+        ref = CGRectMake(tableH - CGRectGetMaxY(ref), CGRectGetMinX(ref),
+                         ref.size.height, ref.size.width);
+    }
+    CGSize screen = _screenSize;
+    CGFloat refW = MAX(1.0, _referenceScreenSize.width), refH = MAX(1.0, _referenceScreenSize.height);
+    _canvasRect = CGRectMake(ref.origin.x * (screen.width / refW), ref.origin.y * (screen.height / refH),
+                             ref.size.width * (screen.width / refW), ref.size.height * (screen.height / refH));
+#else
+    _canvasRect = CGRectNull;
+#endif
+}
+
+- (BOOL)refreshForWindowSize:(CGSize)size {
+    if (size.width < 1 || size.height < 1) return NO;
+    BOOL wantLandscape = size.width > size.height;
+    BOOL changed = fabs(size.width - _screenSize.width) > 0.5 || fabs(size.height - _screenSize.height) > 0.5;
+    if (wantLandscape != _isLandscape) {
+        _screenSize = size;   /* the re-derived canvas has to land on the new geometry */
+        if ([_calibrationID isEqualToString:CPM_ANCHOR_CALIBRATION_ID]) {
+            [self loadCompiledAnchorsForLandscape:wantLandscape];
+        } else {
+            _isLandscape = wantLandscape;
+            _canvasRect = CGRectNull;
+            CPM_LOG(@"calibration '%@' is not the compiled-in table: orientation changed, "
+                    @"anchors need recalibration", _calibrationID);
+        }
+        /* Whatever was verified belongs to the other orientation now. */
+        _userVerified = NO;
+        changed = YES;
+    }
+    if (!changed) return NO;
+    _screenSize = size;
+    [self rebuildDerivedValues];
+    return YES;
 }
 
 - (void)rebuildDerivedValues {
@@ -217,32 +309,8 @@ static NSString *const kCPMCalibrationIDKey = @"cpm_ui_calibration_id";
     CPMUICalibration *cal = [[CPMUICalibration alloc] init];
     cal.screenSize = screenSize.width > 0 && screenSize.height > 0
         ? screenSize : [self currentScreenSize];
-    cal.referenceScreenSize = CGSizeMake(CPM_ANCHOR_REFERENCE_WIDTH, CPM_ANCHOR_REFERENCE_HEIGHT);
-    cal.isLandscape = CPM_ANCHOR_IS_LANDSCAPE != 0;
     cal.calibrationID = CPM_ANCHOR_CALIBRATION_ID;
-    [cal.anchorsByType removeAllObjects];
-    for (NSUInteger i = 0; i < CPM_ANCHOR_RECORD_COUNT; i++) {
-        const CPMUIAnchorRecord *r = &CPMUIAnchorRecords[i];
-        CPMUIElementAnchor *a = [[CPMUIElementAnchor alloc]
-                                initWithType:(CPMUIElementType)r->type
-                                      center:CGPointMake(r->centerX, r->centerY)
-                                        size:CGSizeMake(r->width, r->height)];
-        a.sliderMinX = r->sliderMinX; a.sliderMaxX = r->sliderMaxX;
-        a.sliderMinY = r->sliderMinY; a.sliderMaxY = r->sliderMaxY;
-        a.displayName = [NSString stringWithUTF8String:r->name];
-        a.isValid = r->isValid;
-        cal.anchorsByType[@(r->type)] = a;
-    }
-#if CPM_ANCHOR_HAS_CANVAS_RECT
-    CGSize screen = cal.screenSize;
-    CGRect ref = CPM_ANCHOR_CANVAS_RECT;
-    cal.canvasRect = CGRectMake(ref.origin.x * (screen.width / cal.referenceScreenSize.width),
-                                ref.origin.y * (screen.height / cal.referenceScreenSize.height),
-                                ref.size.width * (screen.width / cal.referenceScreenSize.width),
-                                ref.size.height * (screen.height / cal.referenceScreenSize.height));
-#else
-    cal.canvasRect = CGRectNull;
-#endif
+    [cal loadCompiledAnchorsForLandscape:(cal.screenSize.width > cal.screenSize.height)];
     [cal rebuildDerivedValues];
     return cal;
 }
@@ -259,6 +327,8 @@ static NSString *const kCPMCalibrationIDKey = @"cpm_ui_calibration_id";
     if ([ident isKindOfClass:NSString.class] && ident.length) cal.calibrationID = ident;
     NSNumber *land = json[@"isLandscape"];
     if ([land isKindOfClass:NSNumber.class]) cal.isLandscape = land.boolValue;
+    NSNumber *rot = json[@"referenceSpaceRotated"];
+    if ([rot isKindOfClass:NSNumber.class]) cal.referenceSpaceRotated = rot.boolValue;
     NSNumber *verified = json[@"userVerified"];
     cal.userVerified = [verified isKindOfClass:NSNumber.class] ? verified.boolValue : YES;
     NSArray *anchors = json[@"anchors"];
@@ -286,6 +356,7 @@ static NSString *const kCPMCalibrationIDKey = @"cpm_ui_calibration_id";
     d[@"referenceScreenSize"] = @{@"width": @(_referenceScreenSize.width), @"height": @(_referenceScreenSize.height)};
     d[@"screenSize"] = @{@"width": @(_screenSize.width), @"height": @(_screenSize.height)};
     d[@"isLandscape"] = @(_isLandscape);
+    d[@"referenceSpaceRotated"] = @(_referenceSpaceRotated);
     d[@"userVerified"] = @(_userVerified);
     d[@"anchors"] = anchors;
     d[@"anchorSource"] = [NSString stringWithFormat:@"%@ / %@", @"cpm_ui_anchors.json",
@@ -405,23 +476,26 @@ static NSString *const kCPMCalibrationIDKey = @"cpm_ui_calibration_id";
 
 - (BOOL)isUsableForCurrentScreen {
     if (_screenSize.width <= 0 || _screenSize.height <= 0) return NO;
-    BOOL screenLandscape = _screenSize.width > _screenSize.height;
-    if (screenLandscape != _isLandscape) return NO;
     if (self.anchors.count < (NSUInteger)CPMUIElementTypeCount) return NO;
-    CGFloat aspectRef = _referenceScreenSize.width / _referenceScreenSize.height;
-    CGFloat aspectScreen = _screenSize.width / _screenSize.height;
-    if (aspectRef > 0 && fabs(aspectRef - aspectScreen) / aspectRef > 0.35) return NO;
+    for (CPMUIElementAnchor *a in self.anchors) {
+        if (!a.isValid) return NO;
+    }
+    /* Orientation is deliberately not a veto here: -refreshForWindowSize: rotates the
+     * reference space instead, and NGUI scales its layout to whatever the window is. */
     return YES;
 }
 
 - (NSString *)validationReport {
     NSMutableArray<NSString *> *lines = [NSMutableArray array];
-    BOOL screenLandscape = _screenSize.width > _screenSize.height;
-    if (screenLandscape != _isLandscape) {
-        [lines addObject:[NSString stringWithFormat:@"Profile is %@, device is %@ — taps would land "
-                                                   @"in the wrong place. Rotate the game or recalibrate.",
-                          _isLandscape ? @"landscape" : @"portrait",
-                          screenLandscape ? @"landscape" : @"portrait"]];
+    if (_referenceSpaceRotated) {
+        [lines addObject:[NSString stringWithFormat:@"The compiled-in landscape table was rotated 90° "
+                                                     @"to match this %@ screen — re-confirm the paint area.",
+                          _screenSize.width > _screenSize.height ? @"landscape" : @"portrait"]];
+    } else {
+        BOOL screenLandscape = _screenSize.width > _screenSize.height;
+        if (screenLandscape != _isLandscape) {
+            [lines addObject:@"Profile and screen disagree on orientation — open the panel again to re-derive it."];
+        }
     }
     if (!_userVerified) {
         [lines addObject:[NSString stringWithFormat:@"Anchors come from the compiled-in %@ table and were "
@@ -443,7 +517,8 @@ static NSString *const kCPMCalibrationIDKey = @"cpm_ui_calibration_id";
     }
     if (lines.count == 0) {
         [lines addObject:[NSString stringWithFormat:@"Calibration '%@' looks consistent for %@ (%0.0f×%0.0f pt).",
-                          [self _calibrationId_safe], screenLandscape ? @"landscape" : @"portrait",
+                          [self _calibrationId_safe],
+                          _screenSize.width > _screenSize.height ? @"landscape" : @"portrait",
                           _screenSize.width, _screenSize.height]];
     }
     return [lines componentsJoinedByString:@"\n"];

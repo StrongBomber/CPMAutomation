@@ -266,6 +266,14 @@
     }
     [self clampOverlayToScreen];
     [self clampMenuToScreen];
+
+    if (self.cpmCalibration) {
+        BOOL changed = [self.cpmCalibration refreshForWindowSize:self.overlayWindow.bounds.size];
+        if (changed) {
+            CPM_LOG(@"screen geometry changed — calibration re-derived, ROI must be re-confirmed");
+            if (self.autoDrawViewController) [self.autoDrawViewController refreshDiagnostics];
+        }
+    }
 }
 
 #pragma mark - Windows / scenes
@@ -2031,6 +2039,13 @@
     if (!self.cpmCalibration) {
         self.cpmCalibration = [CPMUICalibration loadFromUserDefaults] ?: [CPMUICalibration defaultCalibration];
     }
+    /* A profile restored from an earlier session (or from mainScreen bounds) may describe a
+     * different orientation than the window right now; the overlay window's frame is the
+     * geometry the user actually sees, so it wins. */
+    UIView *root = self.overlayWindow.rootViewController.view;
+    if (root && [self.cpmCalibration refreshForWindowSize:root.bounds.size]) {
+        CPM_LOG(@"calibration re-derived for %.0fx%.0f pt", root.bounds.size.width, root.bounds.size.height);
+    }
     return self.cpmCalibration;
 }
 
@@ -2223,7 +2238,12 @@
     [self showToast:@"Boyamayı sürükleyerek seçin"];
 }
 
-- (void)autoDrawControllerDidRequestStart:(id)controller { [self autoDrawStatusChanged]; }
+- (void)autoDrawControllerDidRequestStart:(id)controller {
+    [self autoDrawStatusChanged];
+    if (self.executionController.dryRun) {
+        [self showToast:@"Önizleme sürüyor — oyuna dokunuş gitmiyor"];
+    }
+}
 - (void)autoDrawControllerDidRequestPause:(id)controller { [self autoDrawStatusChanged]; }
 - (void)autoDrawControllerDidRequestStop:(id)controller { [self autoDrawStatusChanged]; }
 
@@ -2252,6 +2272,7 @@
     self.autoDrawDimView.hidden = NO;
     CPMUICalibration *cal = [self cpmCalibrationProfile];
     cal.canvasRect = CGRectStandardize(rect);
+    cal.userVerified = YES;   /* measured on this device, right now — that is the point */
     [cal saveToUserDefaults];
     if ([self.autoDrawViewController isKindOfClass:CPMAutoDrawViewController.class]) {
         self.autoDrawViewController.canvasScreenRect = cal.canvasRect;
