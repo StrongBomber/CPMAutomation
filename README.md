@@ -117,6 +117,12 @@ mirror (GitHub only reads that path). It runs on `macos-15`, checks out with
 `actions/checkout@v4`, runs `make check`, `make clean`, `make`, and uploads `Overlay.dylib`
 with `actions/upload-artifact@v4`.
 
+Nothing under `.github/workflows/` can be pushed with this repo's automation token (GitHub
+refuses workflow paths without the `workflows` permission), so that directory is maintained by
+copying: `ci/build.yml` is the file to edit, and `.github/workflows/build.yml` must be pasted
+over it in the web UI. This is also how the obsolete `build-android.yml` gets deleted — it is
+removed in the working tree here, and needs the same one-line removal on GitHub.
+
 ## 4. Using it in game
 
 The panel is Turkish, like the rest of the tweak; its diagnostics/log rows stay English on
