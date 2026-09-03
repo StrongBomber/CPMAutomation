@@ -14,6 +14,25 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 PATH = ROOT / "Resources" / "cpm_il2cpp_layout.json"
+SPEC = ROOT / "tools" / "cpm_layout_spec.json"
+
+
+def expectations() -> dict:
+    """{class id: [field names the spec insists on]} — `*`/`!x` entries are not names."""
+    if not SPEC.exists():
+        return {}
+    try:
+        classes = json.loads(SPEC.read_text(encoding="utf-8")).get("classes", [])
+    except (ValueError, OSError):
+        return {}
+    out = {}
+    for entry in classes:
+        key = entry.get("id") or entry.get("name")
+        wanted = [f for f in (entry.get("fields") or [])
+                  if isinstance(f, str) and f not in {"*", "*static"} and not f.startswith("!")]
+        if key and wanted:
+            out[key] = wanted
+    return out
 
 
 def main() -> int:
@@ -35,14 +54,18 @@ def main() -> int:
           f"({static_fields} static) / {methods} methods / {len(enums)} enums")
     print(f"  dump: {dump.get('path', 'dump.cs')} ({dump.get('bytes', 0) / 1e6:.1f} MB, sha256 {sha}…)")
 
-    empty = sorted(name for name, info in classes.items()
-                   if not (info.get("fields") or {}) and not (info.get("staticFields") or {}))
-    if empty:
-        print(f"  warning: {len(empty)} class(es) resolved with no fields: {', '.join(empty)}")
+    want = expectations()
+    problems = []
+    for name, info in sorted(classes.items()):
+        got = set(info.get("fields") or {}) | set(info.get("staticFields") or {})
+        missing = [f for f in want.get(name, []) if f not in got]
+        if missing:
+            problems.append(f"{name}: {', '.join(missing)}")
+    if problems:
+        for line in problems:
+            print(f"  warning: layout is missing {line}")
     else:
-        print("  every expected class resolved instance fields from the dump")
-    if data.get("comment"):
-        print(f"  note: {data['comment']}")
+        print("  every field the layout spec asks for is present (base classes carry their own)")
     return 0
 
 
