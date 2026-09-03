@@ -203,7 +203,7 @@ static NSErrorDomain const CPMExecutionControllerErrorDomain = @"CPMExecutionCon
         [self log:@"already running — ignoring the start request"];
         return;
     }
-    if (!image) { [self fail:@"no image selected"]; return; }
+    if (!image) { [self fail:@"görsel seçilmedi"]; return; }
 
     self.referenceImage = image;
     self.referenceROIRect = roiRect;
@@ -213,7 +213,7 @@ static NSErrorDomain const CPMExecutionControllerErrorDomain = @"CPMExecutionCon
 
     if (self.requiresVerifiedCalibration && !self.calibration.isUsableForCurrentScreen) {
         self.isRunning = NO;
-        [self fail:[NSString stringWithFormat:@"calibration not usable — %@",
+        [self fail:[NSString stringWithFormat:@"kalibrasyon bu ekran için güvenilmez — %@",
                     [self.calibration.validationReport stringByReplacingOccurrencesOfString:@"\n" withString:@"; "]]];
         return;
     }
@@ -231,7 +231,7 @@ static NSErrorDomain const CPMExecutionControllerErrorDomain = @"CPMExecutionCon
     if (used >= 0) cap = MAX(0, cap - used);
     if (cap <= 0) {
         self.isRunning = NO;
-        [self fail:[NSString stringWithFormat:@"no free layers (game reports %ld)", (long)used]];
+        [self fail:[NSString stringWithFormat:@"boş katman yok (oyun %ld katman diyor)", (long)used]];
         return;
     }
 
@@ -253,7 +253,8 @@ static NSErrorDomain const CPMExecutionControllerErrorDomain = @"CPMExecutionCon
         s.decomposer.progressHandler = nil;
         if (!s.isRunning) return;
         if (error || !result) {
-            [s fail:[error.localizedDescription length] ? error.localizedDescription : @"decomposition failed"];
+            [s fail:[NSString stringWithFormat:@"ayrıştırma başarısız: %@",
+                        error.localizedDescription ?: @"bilinmeyen hata"]];
             return;
         }
         s.lastDecomposition = result;
@@ -265,14 +266,14 @@ static NSErrorDomain const CPMExecutionControllerErrorDomain = @"CPMExecutionCon
 
 - (void)startWithPlan:(NSArray<CPMVinylShape *> *)plan imageSize:(CGSize)imageSize {
     NSAssert(NSThread.isMainThread, @"start the automation from the main queue");
-    if (plan.count == 0) { [self fail:@"the plan is empty"]; return; }
+    if (plan.count == 0) { [self fail:@"plan boş — görselden şekil çıkarılamadı"]; return; }
     if (!self.isRunning) {
         self.isRunning = YES;
         [self resetStateKeepingPlan:NO];
         [self.bridge refresh];
         if (self.requiresVerifiedCalibration && !self.calibration.isUsableForCurrentScreen) {
             self.isRunning = NO;
-            [self fail:@"calibration not usable for this screen"];
+            [self fail:@"kalibrasyon bu ekran için güvenilmez — boya alanını yeniden onaylayın"];
             return;
         }
     }
@@ -290,7 +291,7 @@ static NSErrorDomain const CPMExecutionControllerErrorDomain = @"CPMExecutionCon
         if ((NSInteger)queue.count >= cap) { *stop = YES; return; }
         [queue addObject:[obj shapeWithOrder:(NSInteger)queue.count]];
     }];
-    if (queue.count == 0) { [self fail:@"every sticker was filtered out"]; return; }
+    if (queue.count == 0) { [self fail:@"tüm şekiller katman bütçesinin dışında kaldı"]; return; }
 
     self.plan = queue;
     self.workingImageSize = imageSize.width > 1 && imageSize.height > 1 ? imageSize : CGSizeMake(512, 512);

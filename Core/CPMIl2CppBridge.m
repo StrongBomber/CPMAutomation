@@ -436,12 +436,13 @@ static void *CPMSym(const char *name) {
         [detail appendString:@"editor instance: not reachable read-only (blind mode)\n"];
     }
 
-    out.summaryString = [NSString stringWithFormat:@"%@%@ / layers %@ of %@ / %@",
-                         self.isAvailable ? @"il2cpp ok" : @"il2cpp n/a",
-                         out.layoutMatchesDump ? @"layout ok" : [NSString stringWithFormat:@"layout %ldΔ", (long)drift],
+    out.summaryString = [NSString stringWithFormat:@"il2cpp %@ · yerleşim %@ · katman %@ / %@ · %@",
+                         self.isAvailable ? @"✓" : @"yok (sebep: detayda)",
+                         out.layoutMatchesDump ? @"✓" : [NSString stringWithFormat:@"%ldΔ kayma", (long)drift],
                          out.layerCount == NSNotFound ? @"?" : [@(out.layerCount) stringValue],
                          out.maxLayers == NSNotFound ? @"?" : [@(out.maxLayers) stringValue],
-                         out.editorLoaded ? @"editor open" : @"editor closed"];
+                         out.editorLoaded ? @"editör açık"
+                                          : @"editör örneği bulunamadı — katman limiti senin ayarın"];
     out.detailString = [detail copy];
 
     self.lastReadout = out;

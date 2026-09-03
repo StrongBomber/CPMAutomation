@@ -33,6 +33,7 @@ static const CGFloat kPanelRowHeight = 40.0;
 @property (nonatomic, strong) UILabel *layerLimitLabel;
 @property (nonatomic, strong) UISlider *touchDelaySlider;
 @property (nonatomic, strong) UILabel *touchDelayLabel;
+@property (nonatomic, strong) UISegmentedControl *mappingControl;
 @property (nonatomic, strong) UISwitch *previewOnlySwitch;
 @property (nonatomic, strong) UISwitch *autoSaveSwitch;
 @property (nonatomic, strong) UIView *regionRow;
@@ -181,6 +182,18 @@ static const CGFloat kPanelRowHeight = 40.0;
                                      action:@selector(previewOnlyChanged:)] height:32];
     [self placeRow:[self switchRowWithLabel:@"Bitince Onay'a bas" target:&_autoSaveSwitch
                                      action:@selector(autoSaveChanged:)] height:32];
+
+    /* Which way the reference table becomes screen points. If every tap misses in the same
+     * direction the mode is wrong for this device — the user can flip it here instead of
+     * rebuilding the tweak. */
+    [self placeRow:[self labelWithText:@"Dokunuş eşlemesi (referans → ekran)"
+                                  font:[UIFont systemFontOfSize:12 weight:UIFontWeightRegular]
+                                 color:[UIColor colorWithWhite:0.8 alpha:1]
+                                height:16] height:16];
+    self.mappingControl = [[UISegmentedControl alloc] initWithItems:@[@"germe", @"oranlı", @"çapalı"]];
+    self.mappingControl.selectedSegmentIndex = (NSInteger)self.calibration.mappingMode;
+    [self.mappingControl addTarget:self action:@selector(mappingChanged:) forControlEvents:UIControlEventValueChanged];
+    [self placeRow:self.mappingControl height:28];
 
     /* run controls */
     UIView *runRow = [[UIView alloc] initWithFrame:CGRectZero];
@@ -483,6 +496,17 @@ static const CGFloat kPanelRowHeight = 40.0;
                                     : @"live mode: touches will be injected"];
 }
 
+- (void)mappingChanged:(UISegmentedControl *)sender {
+    CPMUIMappingMode mode = (CPMUIMappingMode)sender.selectedSegmentIndex;
+    self.calibration.mappingMode = mode;
+    [self.calibration saveToUserDefaults];
+    NSString *modeName = [sender titleForSegmentAtIndex:(NSUInteger)sender.selectedSegmentIndex] ?: @"?";
+    [self appendLogLine:[NSString stringWithFormat:@"mapping → %@ (kaydedildi)", modeName]];
+    /* Positions shift with the mode, so anything computed against the old one is stale. */
+    self.previewShapes = nil;
+    [self refreshDiagnostics];
+}
+
 - (void)autoSaveChanged:(UISwitch *)sender {
     self.executionController.autoSaveVinyl = sender.isOn;
     [[NSUserDefaults standardUserDefaults] setBool:sender.isOn forKey:kCPMDefaultsAutoSave];
@@ -503,6 +527,7 @@ static const CGFloat kPanelRowHeight = 40.0;
     NSNumber *preview = [d objectForKey:kCPMDefaultsPreviewOnly];
     self.previewMode = preview ? [preview boolValue] : YES;
     self.previewOnlySwitch.on = self.previewMode;
+    self.mappingControl.selectedSegmentIndex = (NSInteger)self.calibration.mappingMode;
     NSNumber *autoSave = [d objectForKey:kCPMDefaultsAutoSave];
     self.executionController.autoSaveVinyl = autoSave ? [autoSave boolValue] : NO;
     self.autoSaveSwitch.on = self.executionController.autoSaveVinyl;

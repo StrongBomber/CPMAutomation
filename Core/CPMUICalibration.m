@@ -163,6 +163,15 @@ static BOOL CPMUITypeIsSlider(CPMUIElementType type) {
 @property (nonatomic, assign, readwrite) CGFloat scaleFactor;
 @property (nonatomic, assign, readwrite) BOOL isLandscape;
 @property (nonatomic, assign, readwrite) BOOL referenceSpaceRotated;
+@property (nonatomic, assign) CGFloat fitScaleX;
+@property (nonatomic, assign) CGFloat fitScaleY;
+@property (nonatomic, assign) CGFloat fitOffsetX;
+@property (nonatomic, assign) CGFloat fitOffsetY;
+- (void)ensureFit;
+@property (nonatomic, assign) CGFloat fitMidScaleX;
+@property (nonatomic, assign) CGFloat fitMidScaleY;
+@property (nonatomic, assign) CGFloat fitMarginX;
+@property (nonatomic, assign) CGFloat fitMarginY;
 @property (nonatomic, copy, readwrite) NSArray<CPMUIElementAnchor *> *anchors;
 @property (nonatomic, strong) NSMutableDictionary<NSNumber *, CPMUIElementAnchor *> *anchorsByType;
 @end
@@ -195,6 +204,7 @@ static NSString *const kCPMCalibrationIDKey = @"cpm_ui_calibration_id";
     self = [super init];
     if (self) {
         _anchorsByType = [NSMutableDictionary dictionary];
+        _mappingMode = CPMUIMappingModeAnchored;   /* see -ensureFit */
         _screenSize = [self.class currentScreenSize];
         _calibrationID = CPM_ANCHOR_CALIBRATION_ID;
         [self loadCompiledAnchorsForLandscape:(_screenSize.width > _screenSize.height)];
@@ -254,10 +264,7 @@ static NSString *const kCPMCalibrationIDKey = @"cpm_ui_calibration_id";
         ref = CGRectMake(tableH - CGRectGetMaxY(ref), CGRectGetMinX(ref),
                          ref.size.height, ref.size.width);
     }
-    CGSize screen = _screenSize;
-    CGFloat refW = MAX(1.0, _referenceScreenSize.width), refH = MAX(1.0, _referenceScreenSize.height);
-    _canvasRect = CGRectMake(ref.origin.x * (screen.width / refW), ref.origin.y * (screen.height / refH),
-                             ref.size.width * (screen.width / refW), ref.size.height * (screen.height / refH));
+    _canvasRect = [self screenRectForReferenceRect:ref];
 #else
     _canvasRect = CGRectNull;
 #endif
@@ -327,6 +334,8 @@ static NSString *const kCPMCalibrationIDKey = @"cpm_ui_calibration_id";
     if ([ident isKindOfClass:NSString.class] && ident.length) cal.calibrationID = ident;
     NSNumber *land = json[@"isLandscape"];
     if ([land isKindOfClass:NSNumber.class]) cal.isLandscape = land.boolValue;
+    NSNumber *mode = json[@"mappingMode"];
+    if ([mode isKindOfClass:NSNumber.class]) cal.mappingMode = (CPMUIMappingMode)mode.integerValue;
     NSNumber *rot = json[@"referenceSpaceRotated"];
     if ([rot isKindOfClass:NSNumber.class]) cal.referenceSpaceRotated = rot.boolValue;
     NSNumber *verified = json[@"userVerified"];
@@ -356,6 +365,7 @@ static NSString *const kCPMCalibrationIDKey = @"cpm_ui_calibration_id";
     d[@"referenceScreenSize"] = @{@"width": @(_referenceScreenSize.width), @"height": @(_referenceScreenSize.height)};
     d[@"screenSize"] = @{@"width": @(_screenSize.width), @"height": @(_screenSize.height)};
     d[@"isLandscape"] = @(_isLandscape);
+    d[@"mappingMode"] = @(_mappingMode);
     d[@"referenceSpaceRotated"] = @(_referenceSpaceRotated);
     d[@"userVerified"] = @(_userVerified);
     d[@"anchors"] = anchors;
@@ -403,25 +413,117 @@ static NSString *const kCPMCalibrationIDKey = @"cpm_ui_calibration_id";
     [self rebuildDerivedValues];
 }
 
+static CGFloat CPMNineSliceMidScale(CGFloat screenExtent, CGFloat refExtent, CGFloat margin, CGFloat edgeScale);
+
+#pragma mark reference → screen fit
+
+/*
+ * The compiled-in table is measured on one device; the game re-lays its UI out on another.
+ * CPM's editor is edge-anchored (toolbars hug the edges, the paint surface floats in the
+ * middle), so the default maps like a nine-slice: the edge bands keep one scale and the
+ * middle band absorbs the difference.
+ *
+ *   germe (stretch)   one scale per axis — a 22 pt slider becomes 43 pt on a 4:3 iPad
+ *   oranlı (uniform)  one scale, letterboxed — pushes the right-hand column off screen
+ *   çapalı (anchored) nine-slice, continuous   ← default
+ *
+ * All three agree when the aspects match, which is the common case on phones.
+ */
+- (void)ensureFit {
+    CGFloat refW = MAX(1.0, _referenceScreenSize.width);
+    CGFloat refH = MAX(1.0, _referenceScreenSize.height);
+    CGFloat sx = _screenSize.width > 1 ? _screenSize.width / refW : 1.0;
+    CGFloat sy = _screenSize.height > 1 ? _screenSize.height / refH : 1.0;
+    _fitMarginX = _fitMarginY = 0;
+    _fitMidScaleX = _fitMidScaleY = 1.0;
+    _fitOffsetX = _fitOffsetY = 0;
+    switch (_mappingMode) {
+        case CPMUIMappingModeStretch:
+            _fitScaleX = sx; _fitScaleY = sy;
+            _fitMidScaleX = sx; _fitMidScaleY = sy;
+            break;
+        case CPMUIMappingModeUniform: {
+            CGFloat sc = sqrt(sx * sy);
+            _fitScaleX = _fitScaleY = sc;
+            _fitMidScaleX = _fitMidScaleY = sc;
+            _fitOffsetX = (_screenSize.width - refW * sc) * 0.5;
+            _fitOffsetY = (_screenSize.height - refH * sc) * 0.5;
+            break;
+        }
+        case CPMUIMappingModeAnchored:
+        default:
+            _fitScaleX = _fitScaleY = sy;
+            _fitMarginX = refW * 0.22;
+            _fitMarginY = refH * 0.22;
+            _fitMidScaleX = CPMNineSliceMidScale(_screenSize.width, refW, _fitMarginX, sy);
+            _fitMidScaleY = CPMNineSliceMidScale(_screenSize.height, refH, _fitMarginY, sy);
+            break;
+    }
+}
+
+static CGFloat CPMNineSliceMidScale(CGFloat screenExtent, CGFloat refExtent, CGFloat margin, CGFloat edgeScale) {
+    CGFloat middle = refExtent - 2.0 * margin;
+    if (middle <= 1.0) return edgeScale;
+    CGFloat remain = screenExtent - 2.0 * margin * edgeScale;
+    return MAX(0.05, remain / middle);
+}
+
+static CGFloat CPMNineSliceMap(CGFloat value, CGFloat refExtent, CGFloat margin,
+                               CGFloat edgeScale, CGFloat midScale) {
+    if (value <= margin) return value * edgeScale;
+    if (value >= refExtent - margin)
+        return margin * edgeScale + (refExtent - 2.0 * margin) * midScale
+             + (value - (refExtent - margin)) * edgeScale;
+    return margin * edgeScale + (value - margin) * midScale;
+}
+
+static CGFloat CPMNineSliceUnmap(CGFloat mapped, CGFloat refExtent, CGFloat margin,
+                                 CGFloat edgeScale, CGFloat midScale) {
+    CGFloat lo = margin * edgeScale;
+    CGFloat hi = lo + (refExtent - 2.0 * margin) * midScale;
+    if (midScale <= 0) return mapped / (edgeScale > 0 ? edgeScale : 1.0);
+    if (mapped <= lo) return mapped / edgeScale;
+    if (mapped >= hi) return (refExtent - margin) + (mapped - hi) / edgeScale;
+    return margin + (mapped - lo) / midScale;
+}
+
+
 #pragma mark space conversions
 
 - (CGPoint)screenPointForReferencePoint:(CGPoint)p {
     if (_referenceScreenSize.width <= 0 || _referenceScreenSize.height <= 0) return p;
-    return CGPointMake(p.x * (_screenSize.width / _referenceScreenSize.width),
-                       p.y * (_screenSize.height / _referenceScreenSize.height));
+    [self ensureFit];
+    if (_mappingMode == CPMUIMappingModeAnchored) {
+        return CGPointMake(CPMNineSliceMap(p.x, _referenceScreenSize.width, _fitMarginX, _fitScaleX, _fitMidScaleX),
+                           CPMNineSliceMap(p.y, _referenceScreenSize.height, _fitMarginY, _fitScaleY, _fitMidScaleY));
+    }
+    return CGPointMake(p.x * _fitScaleX + _fitOffsetX, p.y * _fitScaleY + _fitOffsetY);
 }
 
 - (CGRect)screenRectForReferenceRect:(CGRect)r {
-    CGPoint origin = [self screenPointForReferencePoint:r.origin];
-    return CGRectMake(origin.x, origin.y,
-                      r.size.width * (_screenSize.width / _referenceScreenSize.width),
-                      r.size.height * (_screenSize.height / _referenceScreenSize.height));
+    [self ensureFit];
+    if (_mappingMode == CPMUIMappingModeAnchored) {
+        /* Map both corners so an edge-anchored rect keeps its gap from that edge. */
+        CGPoint lo = [self screenPointForReferencePoint:r.origin];
+        CGPoint hi = [self screenPointForReferencePoint:CGPointMake(CGRectGetMaxX(r), CGRectGetMaxY(r))];
+        return CGRectMake(MIN(lo.x, hi.x), MIN(lo.y, hi.y), fabs(hi.x - lo.x), fabs(hi.y - lo.y));
+    }
+    return CGRectMake(r.origin.x * _fitScaleX + _fitOffsetX,
+                      r.origin.y * _fitScaleY + _fitOffsetY,
+                      r.size.width * _fitScaleX,
+                      r.size.height * _fitScaleY);
 }
 
 - (CGPoint)referencePointForScreenPoint:(CGPoint)p {
     if (_screenSize.width <= 0 || _screenSize.height <= 0) return p;
-    return CGPointMake(p.x * (_referenceScreenSize.width / _screenSize.width),
-                       p.y * (_referenceScreenSize.height / _screenSize.height));
+    [self ensureFit];
+    if (_mappingMode == CPMUIMappingModeAnchored) {
+        return CGPointMake(CPMNineSliceUnmap(p.x, _referenceScreenSize.width, _fitMarginX, _fitScaleX, _fitMidScaleX),
+                           CPMNineSliceUnmap(p.y, _referenceScreenSize.height, _fitMarginY, _fitScaleY, _fitMidScaleY));
+    }
+    CGFloat sx = _fitScaleX > 0.0001 ? _fitScaleX : 1.0;
+    CGFloat sy = _fitScaleY > 0.0001 ? _fitScaleY : 1.0;
+    return CGPointMake((p.x - _fitOffsetX) / sx, (p.y - _fitOffsetY) / sy);
 }
 
 - (CGRect)effectiveCanvasRect {
@@ -508,13 +610,14 @@ static NSString *const kCPMCalibrationIDKey = @"cpm_ui_calibration_id";
         if (!a || !a.isValid) [missing addObject:CPMUIElementTypeName(t)];
     }
     if (missing.count) [lines addObject:[NSString stringWithFormat:@"No anchor for: %@", [missing componentsJoinedByString:@", "]]];
-    CGFloat aspectRef = _referenceScreenSize.width / MAX(0.001, _referenceScreenSize.height);
-    CGFloat aspectScreen = _screenSize.width / MAX(0.001, _screenSize.height);
-    if (aspectRef > 0 && fabs(aspectRef - aspectScreen) / aspectRef > 0.35) {
-        [lines addObject:[NSString stringWithFormat:@"Aspect ratio differs from the reference profile "
-                                                    @"(%0.2f vs %0.2f); slider ends will be a little off.",
-                          aspectRef, aspectScreen]];
-    }
+    [self ensureFit];
+    NSString *modeName = _mappingMode == CPMUIMappingModeStretch ? @"germe"
+                     : _mappingMode == CPMUIMappingModeUniform ? @"oranlı" : @"çapalı";
+    [lines addObject:[NSString stringWithFormat:
+        @"Eşleme %@ · referans %.0f×%.0f → ekran %.0f×%.0f · %0.2f×. Buton ıskalanırsa paneldeki "
+        @"eşleme modunu değiştir ya da boya alanını yeniden onayla.",
+        modeName, _referenceScreenSize.width, _referenceScreenSize.height,
+        _screenSize.width, _screenSize.height, _fitScaleX]];
     if (lines.count == 0) {
         [lines addObject:[NSString stringWithFormat:@"Calibration '%@' looks consistent for %@ (%0.0f×%0.0f pt).",
                           [self _calibrationId_safe],

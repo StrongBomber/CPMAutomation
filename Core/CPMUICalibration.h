@@ -70,6 +70,15 @@ FOUNDATION_EXPORT NSString *CPMUIElementTypeName(CPMUIElementType type);
 
 @end
 
+/// How reference points become screen points. CPM's editor is edge-anchored (toolbars hug the
+/// screen edges, the paint surface floats in the middle), so a table measured on a phone has to
+/// be re-anchored — not stretched — to reach the same buttons on a 4:3 iPad.
+typedef NS_ENUM(NSInteger, CPMUIMappingMode) {
+    CPMUIMappingModeStretch = 0,    ///< scale each axis independently (only on this exact aspect)
+    CPMUIMappingModeUniform = 1,    ///< one scale, letterboxed and centred
+    CPMUIMappingModeAnchored = 2,   ///< scale by height, keep edge distances from the nearest edge
+};
+
 @interface CPMUICalibration : NSObject <NSCopying>
 
 @property (nonatomic, copy, readonly) NSString *calibrationID;
@@ -77,6 +86,9 @@ FOUNDATION_EXPORT NSString *CPMUIElementTypeName(CPMUIElementType type);
 @property (nonatomic, assign, readonly) CGSize screenSize;
 /// reference size / screen size — below 1 the reference art is being upscaled.
 @property (nonatomic, assign, readonly) CGFloat scaleFactor;
+/// Defaults to CPMUIMappingModeAnchored; the panel exposes it because a wrong guess is visible
+/// immediately (every tap misses in the same direction).
+@property (nonatomic, assign) CPMUIMappingMode mappingMode;
 @property (nonatomic, assign, readonly) BOOL isLandscape;
 @property (nonatomic, copy, readonly) NSArray<CPMUIElementAnchor *> *anchors;
 /// Screen rect of the painted surface. CGRectNull = derived from the screen size.
