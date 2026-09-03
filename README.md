@@ -135,15 +135,20 @@ purpose, because they quote internal names (class, offset, backend).
 4. **Boya alanını seç (ROI)** — drag the box over the part of the *car* the artwork should
    cover, then **Bölgeyi onayla**. That rectangle becomes the calibration canvas rect and is
    stored with the anchors.
-5. **Planı önizle** runs the decomposition only: the log reports how many layers were planned,
+5. **Dokunuş eşlemesi** (germe / oranlı / çapalı) decides how the measured table becomes screen
+   points. `çapalı` is the default and behaves like the engine: one scale near the screen edges
+   (so a toolbar button stays square and keeps its gap from the edge) and a continuous middle
+   band that absorbs a different aspect ratio. On the aspects the table was measured for it is
+   the identity. If every tap misses *in the same direction*, switch it here — no rebuild.
+6. **Planı önizle** runs the decomposition only: the log reports how many layers were planned,
    which were dropped for the budget, and the overlay shows the plan — no touches.
-6. **Katman sınırı** (the label prints the game's own cap next to your limit, e.g.
+7. **Katman sınırı** (the label prints the game's own cap next to your limit, e.g.
    `Katman sınırı: 42 (oyun: 6 / 50 kullanımda)`) and **Yerleşme gecikmesi** (how long the run
    waits for the UI to settle; 15 ms is the floor, not a good default).
 7. **Sadece önizleme (dokunuş yok)** is ON for a first run: the plan is computed and the finger
    positions are drawn, but nothing is injected. Switch it off when the preview matches the car.
    **Bitince Onay'a bas** makes the run tap the editor's Confirm button at the end.
-8. **BAŞLAT** → progress bar + `Katman: n / m`. **Duraklat / Devam / Durdur** work during the
+9. **BAŞLAT** → progress bar + `Katman: n / m`. **Duraklat / Devam / Durdur** work during the
    run; **ACİL DURDUR** (also a long-press on the overlay) drains the queue immediately.
 
 Hiding the panel does not stop a running session: the controller is owned by
@@ -230,6 +235,8 @@ scripts/check_objc.py             repo-hygiene rules the CI enforces
 |---------|-------|
 | overlay never appears | Console for `[OverlayTweak]` / `[CPM-Automation]` logs; is the dylib load command present (`LC_LOAD_DYLIB`)? If the build sets `OVERLAY_TARGET_BUNDLE_ID`, does it match the game's bundle id? (default: no restriction) |
 | **BAŞLAT does nothing** | the status line now says why (`Başlatılamadı: …`). Usual causes: no image; calibration not usable for this screen (the panel re-derives it from the window — reopen the panel after rotating); a preview is still running (use the cached plan by waiting, or the button is disabled during preview); the game reports no free layers. |
+| taps land consistently off to one side, or buttons feel stretched/flat | the mapping mode: try `oranlı` or `germe` in the panel (`Dokunuş eşlemesi`) |
+| "kalibrasyon bu ekran için güvenilmez" | an anchor row is missing/invalid — open the panel once (it re-derives the profile for the current window) and re-confirm the paint area |
 | ran, progress bar moved, nothing in game | **Önizleme** (preview only) is ON — the button turns grey and reads `ÖNİZLE`, and a toast says `Önizleme sürüyor`. Also check the `Dokunma:` line: `visual only` means nothing can be delivered. |
 | panel opens but Start is greyed out | a run is already in progress (or the preview is computing) |
 | "no touches will be sent" in the log | Preview only is ON — that is the default |
